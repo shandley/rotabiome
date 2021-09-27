@@ -1,0 +1,5170 @@
+---
+title: 'Hecatomb Analysis: Rotabiome'
+author: "Scott A. Handley"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+---
+
+# Initiate environment
+
+```{r init-env}
+# Libraries
+library("tidyverse"); packageVersion("tidyverse")
+library("ggpubr"); packageVersion("ggpubr")
+library("rstatix"); packageVersion("rstatix")
+library("phyloseq"); packageVersion("phyloseq")
+library("speedyseq"); packageVersion("speedyseq")
+library("data.table"); packageVersion("data.table")
+library("tidylog"); packageVersion("tidylog")
+library("glue"); packageVersion("glue")
+library("ggrepel"); packageVersion("ggrepel")
+library("janitor"); packageVersion("janitor")
+
+# Global settings
+theme_set(theme_bw())
+options(scipen=999) # Not necessary, but enables consistent evaluation of e-values
+
+```
+
+# Import Data
+
+```{r import-data}
+# Raw counts
+ps.euk.species <- readRDS("./data/ps0_euk_viruses_species.RDS")
+ps.euk.genus <- readRDS("./data/ps0_euk_viruses_genus.RDS")
+ps.euk.fam <- readRDS("./data/ps0_euk_viruses_family.RDS")
+
+# Standardized counts
+ps.euk.species.stand <- readRDS("./data/ps0_euk_viruses_standardized_species.RDS")
+ps.euk.genus.stand <- readRDS("./data/ps0_euk_viruses_standardized_genus.RDS")
+ps.euk.fam.stand <- readRDS("./data/ps0_euk_viruses_standardized_family.RDS")
+
+# Alignments
+ps.aln <- readRDS("./data/aln_euk_viruses_filt.RDS")
+
+# Mapping file
+MAP <- import_qiime_sample_data("./data/mapping_rotabiome_virome.txt")
+
+# Read in Fisher's exact test results
+fishers <- fread("~/Desktop/Book1.txt", header = TRUE, stringsAsFactors = TRUE)
+fishers
+
+# Remove sample with incorrect age data
+ps.euk.species <- subset_samples(ps.euk.species, collab_sample_id != "179-Armah-19866")
+ps.euk.genus <- subset_samples(ps.euk.genus, collab_sample_id != "179-Armah-19866")
+ps.euk.fam <- subset_samples(ps.euk.fam, collab_sample_id != "179-Armah-19866")
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(collab_sample_id != "179-Armah-19866")
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(collab_sample_id != "179-Armah-19866")
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(collab_sample_id != "179-Armah-19866")
+ps.aln <- ps.aln %>%
+    filter(collab_sample_id != "179-Armah-19866")
+
+# Remove late collected Dose 1 samples (> 100 days out for Dose 1)
+ps.euk.species <- subset_samples(ps.euk.species, collab_sample_id != "364-Armah-19896")
+ps.euk.genus <- subset_samples(ps.euk.genus, collab_sample_id != "364-Armah-19896")
+ps.euk.fam <- subset_samples(ps.euk.fam, collab_sample_id != "364-Armah-19896")
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(collab_sample_id != "364-Armah-19896")
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(collab_sample_id != "364-Armah-19896")
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(collab_sample_id != "364-Armah-19896")
+ps.aln <- ps.aln %>%
+    filter(collab_sample_id != "364-Armah-19896")
+
+ps.euk.species <- subset_samples(ps.euk.species, collab_sample_id != "23-Armah-19931")
+ps.euk.genus <- subset_samples(ps.euk.genus, collab_sample_id != "23-Armah-19931")
+ps.euk.fam <- subset_samples(ps.euk.fam, collab_sample_id != "23-Armah-19931")
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(collab_sample_id != "23-Armah-19931")
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(collab_sample_id != "23-Armah-19931")
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(collab_sample_id != "23-Armah-19931")
+ps.aln <- ps.aln %>%
+    filter(collab_sample_id != "23-Armah-19931")
+
+# Remove late collected Dose 2 sample (> 130 days out)
+ps.euk.species <- subset_samples(ps.euk.species, collab_sample_id != "141-Armah-20044")
+ps.euk.genus <- subset_samples(ps.euk.genus, collab_sample_id != "141-Armah-20044")
+ps.euk.fam <- subset_samples(ps.euk.fam, collab_sample_id != "141-Armah-20044")
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(collab_sample_id != "141-Armah-20044")
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(collab_sample_id != "141-Armah-20044")
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(collab_sample_id != "141-Armah-20044")
+ps.aln <- ps.aln %>%
+    filter(collab_sample_id != "141-Armah-20044")
+
+```
+# Remove samples/taxa that have zeroed out
+
+```{r data-check}
+# List sample names with zero sum count
+zero.sample.names <- as.list(sample_names(prune_samples(sample_sums(ps.euk.species) == 0, ps.euk.species)))
+
+# Prune zero count samples from ps objects
+ps.euk.species <- prune_samples(sample_sums(ps.euk.species) > 0, ps.euk.species)
+ps.euk.genus <- prune_samples(sample_sums(ps.euk.genus) > 0, ps.euk.genus)
+ps.euk.fam <- prune_samples(sample_sums(ps.euk.fam) > 0, ps.euk.fam)
+
+# Prune zero count samples from standardized data
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(!Sample %in% zero.sample.names)
+
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(!Sample %in% zero.sample.names)
+
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(!Sample %in% zero.sample.names)
+
+# List taxa with zero sum count
+zero.taxa.names <- as.list(taxa_names(prune_taxa(taxa_sums(ps.euk.species) == 0, ps.euk.species)))
+
+# Prune zero sum taxa from ps objects
+ps.euk.species <- prune_taxa(taxa_sums(ps.euk.species) > 0, ps.euk.species)
+ps.euk.genus <- prune_taxa(taxa_sums(ps.euk.genus) > 0, ps.euk.genus)
+ps.euk.fam <- prune_taxa(taxa_sums(ps.euk.fam) > 0, ps.euk.fam)
+
+# Prune zero count taxa from standardized data
+ps.euk.species.stand <- ps.euk.species.stand %>%
+  filter(!OTU %in% zero.taxa.names)
+
+ps.euk.genus.stand <- ps.euk.genus.stand %>%
+  filter(!OTU %in% zero.taxa.names)
+
+ps.euk.fam.stand <- ps.euk.fam.stand %>%
+  filter(!OTU %in% zero.taxa.names)
+
+```
+
+```{r cohort-calculations}
+samples.per.dose <- ps.euk.fam.stand %>%
+  as_tibble() %>%
+  select(vaccination_proximity, subjectID, stool_number) %>%
+  distinct() %>%
+  arrange(vaccination_proximity, subjectID, stool_number) %>%
+  group_by(vaccination_proximity, subjectID) %>%
+  tally()
+samples.per.dose
+
+
+ggplot(samples.per.dose, aes(x = n)) +
+  geom_histogram(bins = 3) +
+  facet_grid(~vaccination_proximity)
+
+samples.per.dose %>%
+  group_by(vaccination_proximity) %>%
+  summarise(Avg = mean(n), Min = min(n), Max = max(n))
+
+```
+# Merge samples
+
+This code merges all stool samples per vaccination dose. This was done due to inconsistent sampling per dose (e.g. some participants were samples once per does, some several times). In general the sampling time period per dose was within the week after each dose. Thus, to normalize sampling per participant at each dose we averaged all samples per participant per dose.
+
+This code is specific to this project and is likely not useful for a majority of the other projects in the lab.
+
+```{r merge-species}
+# Melt ps0
+ps.melt.sp <- ps.euk.species %>%
+  speedyseq::psmelt() %>%
+  as_tibble()
+
+# Adjust values
+ps.melt.value.sp <- ps.melt.sp %>%
+  select(c((ncol(MAP)+11):(ncol(ps.melt.sp)))) %>%
+   mutate_if(is.factor, ~ as.numeric(levels(.x))[.x])
+
+# Adjust factors
+ps.melt.fact.sp <- ps.melt.sp %>%
+  select(c(1:(ncol(MAP)+10))) %>%
+  mutate_if(is.character, as.factor)
+
+ps.melt.fixed.sp <- bind_cols(ps.melt.fact.sp, ps.melt.value.sp)
+
+# Merge samples (mean) per dose ~ subjectID ~ species
+ps.merged.sp <- ps.melt.fixed.sp %>%
+  group_by(vaccination_proximity, subjectID, Species) %>%
+  mutate(merged_abundance = mean(Abundance)) %>%
+  distinct(subjectID, vaccination_proximity, Species, .keep_all = TRUE)
+
+ps.merged.sp %>%
+  as_tibble() %>%
+  select(subjectID, seroconversion) %>%
+  distinct()
+
+# Add Baltimore virus classifications
+baltimore <- fread("./data/2020_03_11_family_Baltimore_classification_lookup.txt", stringsAsFactors = TRUE)
+ps.merged.sp <- left_join(ps.merged.sp, baltimore, by = "Family")
+ps.merged.sp$Family <- as.factor(ps.merged.sp$Family) # left_join may have converted to character
+ps.merged.sp <- data.table(ps.merged.sp)
+
+# import in library.size calculations (need to write them from convert_phyloseq_*.sh scripts)
+library.size <- read_tsv(file = "./data/library.size.tsv", col_names = TRUE)
+
+# Merge with library size
+ps.merged.sp <- merge(ps.merged.sp, library.size, all.x = TRUE, by = "seq_id")
+
+# Standardize to median library size
+median.ls <- median(library.size$library_size)
+
+ps.merged.scaled.sp <- ps.merged.sp %>%
+  mutate(proportional_abundance = merged_abundance/library_size) %>%
+  mutate(scaled_abundance_median = (median.ls*proportional_abundance)) %>%
+  as_tibble()
+
+# Some diagnostic plots
+p.abundnace.hist.sp <- ggplot(ps.merged.scaled.sp, aes(x = merged_abundance)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Merged Abundance")
+
+p.scaled_anundance.hist.sp <- ggplot(ps.merged.scaled.sp, aes(x = scaled_abundance_median)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abudance")
+
+p.merge.abundance.comparison.sp <- ggplot(ps.merged.scaled.sp, aes(x=scaled_abundance_median+1, y = merged_abundance+1)) +
+  geom_point(size = 0.5, alpha = 0.6) +
+  geom_smooth(method = "lm") +
+  scale_y_log10(labels = scales::scientific) +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abundance", y = "Merged Abundance")
+
+ggarrange(p.abundnace.hist.sp, p.scaled_anundance.hist.sp, p.merge.abundance.comparison.sp, ncol = 3)
+
+```
+
+```{r merge-genus}
+# Melt ps0
+ps.melt.ge <- ps.euk.genus %>%
+  speedyseq::psmelt() %>%
+  as_tibble()
+
+# Adjust values
+ps.melt.value.ge <- ps.melt.ge %>%
+  select(c((ncol(MAP)+10):(ncol(ps.melt.ge)))) %>%
+   mutate_if(is.factor, ~ as.numeric(levels(.x))[.x])
+
+# Adjust factors
+ps.melt.fact.ge <- ps.melt.ge %>%
+  select(c(1:(ncol(MAP)+9))) %>%
+  mutate_if(is.character, as.factor)
+
+ps.melt.fixed.ge <- bind_cols(ps.melt.fact.ge, ps.melt.value.ge)
+
+# Merge samples (mean) per dose ~ subjectID ~ genus
+ps.merged.ge <- ps.melt.fixed.ge %>%
+  group_by(vaccination_proximity, subjectID, Genus) %>%
+  mutate(merged_abundance = mean(Abundance)) %>%
+  distinct(subjectID, vaccination_proximity, Genus, .keep_all = TRUE)
+
+# Add Baltimore virus classifications
+ps.merged.ge <- left_join(ps.merged.ge, baltimore, by = "Family")
+ps.merged.ge$Family <- as.factor(ps.merged.ge$Family) # left_join may have converted to character
+ps.merged.ge <- data.table(ps.merged.ge)
+
+# Merge with library size
+ps.merged.ge <- merge(ps.merged.ge, library.size, all.x = TRUE, by = "seq_id")
+
+ps.merged.scaled.ge <- ps.merged.ge %>%
+  mutate(proportional_abundance = merged_abundance/library_size) %>%
+  mutate(scaled_abundance_median = (median.ls*proportional_abundance)) %>%
+  as_tibble()
+
+# Some diagnostic plots
+p.abundnace.hist.ge <- ggplot(ps.merged.scaled.ge, aes(x = merged_abundance)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Merged Abundance")
+
+p.scaled_anundance.hist.ge <- ggplot(ps.merged.scaled.ge, aes(x = scaled_abundance_median)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abudance")
+
+p.merge.abundance.comparison.ge <- ggplot(ps.merged.scaled.ge, aes(x=scaled_abundance_median+1, y = merged_abundance+1)) +
+  geom_point(size = 0.5, alpha = 0.6) +
+  geom_smooth(method = "lm") +
+  scale_y_log10(labels = scales::scientific) +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abundance", y = "Merged Abundance")
+
+ggarrange(p.abundnace.hist.ge, p.scaled_anundance.hist.ge, p.merge.abundance.comparison.ge, ncol = 3)
+
+```
+```{r merge-family}
+# Melt ps0
+ps.melt.fam <- ps.euk.fam %>%
+  speedyseq::psmelt() %>%
+  as_tibble()
+
+# Adjust values
+ps.melt.value.fam <- ps.melt.fam %>%
+  select(c((ncol(MAP)+9):(ncol(ps.melt.fam)))) %>%
+   mutate_if(is.factor, ~ as.numeric(levels(.x))[.x])
+
+# Adjust factors
+ps.melt.fact.fam <- ps.melt.fam %>%
+  select(c(1:(ncol(MAP)+8))) %>%
+  mutate_if(is.character, as.factor)
+
+ps.melt.fixed.fam <- bind_cols(ps.melt.fact.fam, ps.melt.value.fam)
+
+# Merge samples (mean) per dose ~ subjectID ~ family
+ps.merged.fam <- ps.melt.fixed.fam %>%
+  group_by(vaccination_proximity, subjectID, Family) %>%
+  mutate(merged_abundance = mean(Abundance)) %>%
+  distinct(subjectID, vaccination_proximity, Family, .keep_all = TRUE)
+
+# Add Baltimore virus classifications
+ps.merged.fam <- left_join(ps.merged.fam, baltimore, by = "Family")
+ps.merged.fam$Family <- as.factor(ps.merged.fam$Family) # left_join may have converted to character
+ps.merged.fam <- data.table(ps.merged.fam)
+
+# Merge with library size
+ps.merged.fam <- merge(ps.merged.fam, library.size, all.x = TRUE, by = "seq_id")
+
+ps.merged.scaled.fam <- ps.merged.fam %>%
+  mutate(proportional_abundance = merged_abundance/library_size) %>%
+  mutate(scaled_abundance_median = (median.ls*proportional_abundance)) %>%
+  as_tibble()
+
+# Some diagnostic plots
+p.abundnace.hist.fam <- ggplot(ps.merged.scaled.fam, aes(x = merged_abundance)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Merged Abundance")
+
+p.scaled_anundance.hist.fam <- ggplot(ps.merged.scaled.fam, aes(x = scaled_abundance_median)) +
+  geom_histogram() +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abudance")
+
+p.merge.abundance.comparison.fam <- ggplot(ps.merged.scaled.fam, aes(x=scaled_abundance_median+1, y = merged_abundance+1)) +
+  geom_point(size = 0.5, alpha = 0.6) +
+  geom_smooth(method = "lm") +
+  scale_y_log10(labels = scales::scientific) +
+  scale_x_log10(labels = scales::scientific) +
+  labs(x = "Scaled Abundance", y = "Merged Abundance")
+
+ggarrange(p.abundnace.hist.fam, p.scaled_anundance.hist.fam, p.merge.abundance.comparison.fam, ncol = 3)
+
+```
+# Rename for simplicity
+
+```{r rename}
+# Rename merged data for simplicity
+ps.sp <- ps.merged.scaled.sp
+ps.ge <- ps.merged.scaled.ge
+ps.fam <- ps.merged.scaled.fam
+
+# Calculate number of samples per dose
+ps.sp %>%
+  select(participant_id, vaccination_proximity) %>%
+  distinct() %>%
+  group_by(vaccination_proximity) %>%
+  tally()
+
+```
+# Family analysis
+
+This analysis assists in the selection of which viral families are most likely present in the study, removing viral families only represented with sequences with very short, low % ID alignments.
+
+```{r aln-stats}
+# Family counts
+aln.stats.fam <- ps.aln %>%
+  group_by(Family) %>%
+  tally(name = "Count") %>%
+  arrange(-Count)
+
+p.aln.fam.counts <- ggplot(aln.stats.fam, aes(x = reorder(Family, Count), y = Count)) +
+  geom_point(size = 1, color = "firebrick3") +
+  geom_hline(yintercept = 1e3, lty = 2, col = "steelblue", lwd = 0.6, alpha = 0.8) +
+  scale_y_log10(labels = scales::scientific) +
+  theme(panel.grid.major.x = element_blank()) +
+  theme(panel.grid.minor.y = element_blank()) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  theme(axis.text.y = element_text(size = 7)) +
+  coord_flip() +
+  labs(x = "Family")
+p.aln.fam.counts
+
+# Filter low abundant families
+ps.aln.filt <- ps.aln %>%
+  group_by(Family) %>%
+  mutate(Count = n()) %>%
+  filter(Count > 10) %>%
+  droplevels()
+
+p.scatter.all.fam <- ggplot(ps.aln.filt, aes(x = alignment_length_adjusted, y = percent_id, color = Baltimore)) +
+  geom_jitter(position = position_jitter(width = 0.05, height = 0.05), size = 1, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Family, Count, .fun = "median", .desc = TRUE)) +
+  geom_hline(aes(yintercept = 0.7), lty = 2, color = "gray") + # strange ggplot2 behavior. Have to add this as an aes() if using fct_reorder
+  geom_vline(aes(xintercept = 150), lty = 2, color = "gray") +
+  labs(x = "Alignment Length", y = "% ID", color = "Query Type") +
+  theme(axis.text = element_text(size = 8)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  theme(legend.position = "right")
+
+# Filter families with a low percentage of high ID (> 0.7), long (>50) alignments
+id.filt.aa <- ps.aln.filt %>%
+  filter(query_type == "aa") %>%
+  select(Family, alignment_length, percent_id) %>%
+  mutate(quadrant = ifelse( (alignment_length > 50 | percent_id > 0.7), "High", "Low")) %>%
+  group_by(Family, quadrant) %>%
+  mutate(Count = n()) %>%
+  filter(Count > 1) %>%
+  select(Family, quadrant, Count) %>%
+  distinct(Family, quadrant, Count) %>%
+  arrange(Family) %>%
+  ungroup() %>%
+  pivot_wider(names_from = quadrant, values_from = Count) %>%
+  mutate(percent = High/Low) %>%
+  arrange(-percent) %>%
+  filter(percent > 1) %>%
+  filter(Family != "Viruses") %>%
+  filter(Family != "unknown") %>%
+  droplevels()
+id.filt.aa
+
+family.keep.all <- id.filt.aa$Family
+family.keep.select <- c("Picornaviridae",
+                        "Parvoviridae",
+                        "Reoviridae",
+                        "Astroviridae",
+                        "Anelloviridae",
+                        "Adenoviridae",
+                        "Caliciviridae")
+
+ps.aln.enriched <- ps.aln.filt %>%
+  filter(Family %in% family.keep.select) %>%
+  group_by(Family) %>%
+  mutate(Count = n()) %>%
+  droplevels()
+  
+levels(ps.aln.enriched$Family)
+
+# Enriched families
+p.family.id.scatter <- ggplot(ps.aln.enriched, aes(x = alignment_length_adjusted, y = 100*(percent_id), color = Baltimore)) +
+  geom_jitter(size = 0.5, alpha = 0.2, width = 2) +
+  facet_wrap(facets = ~fct_reorder(Family, Count, .fun = "median", .desc = TRUE), nrow = 7) +
+  theme(panel.grid.minor = element_blank()) +
+  labs(x = "Alignment Length", y = "% ID", color = "Virus Type") +
+  theme(axis.text = element_text(size = 8)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  guides(colour = guide_legend(override.aes = list(size=3, alpha = 1))) +
+  geom_hline(aes(yintercept = 70), lty = 2, color = "gray") + # strange ggplot2 behaviour. Have to add this as an aes() if using fct_reorder
+  geom_vline(aes(xintercept = 150), lty = 2, color = "gray") +
+  theme(panel.grid = element_blank()) +
+  expand_limits(y = c(30,105)) +
+  theme(legend.position = "null")
+p.family.id.scatter
+
+fam.counts.tbl <- ps.aln.enriched %>%
+  group_by(Family) %>%
+  tally(name = "Count") %>%
+  arrange(-Count)
+
+fam.counts.tbl$Baltimore <- c("ssRNA(+)",
+                              "ssDNA",
+                              "dsRNA",
+                              "ssRNA(+)",
+                              "ssDNA",
+                              "dsDNA",
+                              "ssRNA(+)")
+
+p.family.id.quant <- ggplot(fam.counts.tbl, aes(x = reorder(Family, Count), y = Count, color = Baltimore)) +
+  geom_point(size = 2) +
+  scale_y_log10(labels = scales::scientific) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  theme(panel.grid.minor = element_blank()) +
+  theme(axis.text = element_text(size = 8)) +
+  labs(x = "Family", y = "# of Reads") +
+  expand_limits(y = c(900,2e5)) +
+  coord_flip() +
+  theme(legend.position = "null")
+
+ggarrange(p.family.id.quant, p.family.id.scatter, ncol = 2, widths = c(0.15, 0.85))
+
+```
+
+
+```{r sample-by-sample plots}
+ps.euk.genus.mean <- ps.aln.enriched %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(subjectID, Family, Count) %>%
+    summarise(family_sum = sum(scaled_abundance_median), n = n())
+
+p.fam.hm <- ggplot(ps.euk.genus.mean, aes(x = subjectID, y = reorder(Family, Count, sum), fill = log2(family_sum))) +
+    geom_tile(aes(height = 1, width = 1)) +
+    theme(axis.text.x = element_blank()) +
+    theme(panel.grid = element_blank()) +
+    theme(axis.title.x = element_blank()) +
+    theme(axis.ticks = element_blank()) +
+    labs(y = "Viral Family", fill = "# of Reads (Log2)") +
+    scale_fill_gradient(low = "lightgrey", high = "firebrick3")
+ggarrange(p.fam.hm, labels = c("C)"))
+
+ggarrange(p.family.id.scatter, p.fam.hm, nrow = 2, heights = c(0.7, 0.3))
+
+```
+
+```{r family-time-series}
+# Subset families of interest
+ps.fam.filt <- ps.euk.species.stand %>%
+  filter(Family %in% family.keep.select) %>%
+  group_by(Family) %>%
+  mutate(Count = n()) %>%
+  droplevels()
+
+# Average abundance of each genus per dose
+ps.family.ts <- ps.fam.filt %>%
+  group_by(vaccination_proximity, Family, subjectID, Count) %>%
+  summarise(mean.ts = mean(scaled_abundance_median)) %>%
+  ungroup() %>%
+  arrange(-mean.ts)
+
+ps.family.ts$Family <- factor(ps.family.ts$Family, levels = c("Picornaviridae",
+                                                              "Parvoviridae",
+                                                              "Reoviridae",
+                                                              "Astroviridae",
+                                                              "Anelloviridae",
+                                                              "Adenoviridae",
+                                                              "Caliciviridae"))
+
+levels(ps.family.ts$Family)
+
+p.fam.dose.hm <- ggplot(ps.family.ts, aes(x = subjectID, y = Family, fill = log2(mean.ts+1))) +
+  geom_tile() +
+  facet_grid(Family~vaccination_proximity, scales = "free") +
+  theme(axis.text.y = element_blank()) +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.ticks.y = element_blank()) +
+  theme(axis.ticks.x = element_blank()) +
+  scale_fill_gradient(low = "white", high = "black") +
+  labs(y = "", x = "Subject", fill = "Mean Abundance (log2)")
+p.fam.dose.hm
+
+```
+# Counts analysis
+
+# All families
+
+```{r family-count-analysis}
+ps.fam.enriched <- ps.fam %>%
+  filter(Family %in% family.keep.select) %>%
+  droplevels() %>%
+  group_by(Family) %>%
+  mutate(mean_family = mean(Abundance)) %>%
+  ungroup()
+
+# Reorder to align with previous plots
+ps.fam.enriched$Family <- factor(ps.fam.enriched$Family, levels = c("Picornaviridae",
+                                                                    "Parvoviridae",
+                                                                    "Reoviridae",
+                                                                    "Astroviridae",
+                                                                    "Anelloviridae",
+                                                                    "Adenoviridae",
+                                                                    "Caliciviridae"))
+
+levels(ps.fam.enriched$Family)
+
+p.fam.dose <- ggplot(ps.fam.enriched, aes(x = vaccination_proximity, y = log2(scaled_abundance_median+1), color = Baltimore)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.5) +
+  facet_wrap(~Family, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="") +
+  guides(colour = guide_legend(override.aes = list(size=3, alpha = 1))) +
+  theme(panel.grid.minor = element_blank()) +
+  expand_limits(y = c(-1,20))
+
+# Add summary reference point
+p.fam.dose <- add_summary(data = ps.fam.enriched, p.fam.dose, "mean_sd", color = "grey40", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.fam.dose
+
+# Kruskal-wallis test
+ps.fam.enriched %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Family) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  add_significance()
+
+# Dunn's post test
+stat.test.fam.dose <- ps.fam.enriched %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Family) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "bonferroni") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.fam.dose
+
+# Quick summary of significance
+stat.test.fam.dose %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Family)
+
+# Family per seroconversion
+p.family.seroconverison <- ggplot(ps.fam.enriched, aes(x = seroconversion, y = scaled_abundance_median, color = seroconversion)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.1, alpha = 0.6, size = 0.9) +
+  scale_y_log10() +
+  facet_grid(vaccination_proximity~Family) +
+  labs(x = "", y = "Abundance (log10)")
+  
+# Means test
+## ! Need to cycle through each dose
+ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS3") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Family) %>%
+  kruskal_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+
+## Family Fishers
+fam.pa <- ps.fam.enriched %>%
+  select(subjectID, vaccination_proximity, Family, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 0, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity, Family)
+
+fam.xtab <- fam.pa %>%
+  group_by(vaccination_proximity, Family, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+
+ggplot(fam.xtab, aes(x = Family, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive", x = "") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+fam.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Family) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+  
+
+```
+
+```{r fam-IgA-levels}
+# All Samples plot
+p.fam.IgA <- ggplot(ps.fam.enriched, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 0.7) +
+  geom_smooth(method = "lm") +
+  facet_grid(vaccination_proximity~Family)
+
+# Dose 1
+ps.fam.IgA.DS1 <- ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(subjectID, vaccination_proximity, Family, scaled_abundance_median, postvaccination_IgA_titer, seroconversion) %>%
+  filter(postvaccination_IgA_titer > 7)
+
+ggplot(ps.fam.IgA.DS1, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_grid(vaccination_proximity~Family)
+
+# Multiple correlation test
+ps.fam.IgA.DS1.cor <- ps.fam.IgA.DS1 %>%
+  group_by(Family) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+
+DS1.p <- ps.fam.IgA.DS1.cor$p_val
+DS1.padj <- as_tibble(p.adjust(DS1.p, method = "holm"))
+cbind(ps.fam.IgA.DS1.cor, DS1.padj)
+
+# Dose 2
+ps.fam.IgA.DS2 <- ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(subjectID, vaccination_proximity, Family, scaled_abundance_median, postvaccination_IgA_titer, seroconversion) %>%
+  filter(postvaccination_IgA_titer > 7)
+
+ggplot(ps.fam.IgA.DS2, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_grid(vaccination_proximity~Family)
+
+# Multiple correlation test
+ps.fam.IgA.DS2.cor <- ps.fam.IgA.DS2 %>%
+  group_by(Family) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+
+DS2.p <- ps.fam.IgA.DS2.cor$p_val
+DS2.padj <- as_tibble(p.adjust(DS2.p, method = "holm"))
+cbind(ps.fam.IgA.DS2.cor, DS2.padj)
+
+# Dose 3
+ps.fam.IgA.DS3 <- ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(subjectID, vaccination_proximity, Family, scaled_abundance_median, postvaccination_IgA_titer, seroconversion) %>%
+  filter(postvaccination_IgA_titer > 7)
+
+ggplot(ps.fam.IgA.DS3, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_grid(vaccination_proximity~Family)
+
+# Multiple correlation test
+ps.fam.IgA.DS3.cor <- ps.fam.IgA.DS3 %>%
+  group_by(Family) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+
+DS3.p <- ps.fam.IgA.DS3.cor$p_val
+DS3.padj <- as_tibble(p.adjust(DS3.p, method = "holm"))
+cbind(ps.fam.IgA.DS3.cor, DS3.padj)
+
+```
+
+```{r fam-pre-post}
+# There are 83 DS1 samples
+ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(subjectID, pre_post) %>%
+  distinct() %>%
+  arrange(subjectID) %>%
+  group_by(pre_post) %>%
+  tally()
+
+# At Dose 1 there are 9 pre and 81 post sample
+# This is > than the total # of subjects at DS1 as some samples had more than 1 sample taken
+
+# Create list of all DS1 samples with a 'pre' sample collected (n=9)
+pre.list <- ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(subjectID, pre_post) %>%
+  distinct() %>%
+  arrange(subjectID) %>%
+  filter(pre_post == "pre") %>%
+  select(subjectID)
+
+# Create list of all DS1 samples with a 'post' sample collected (n=81)
+post.list <- ps.fam.enriched %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(subjectID, pre_post) %>%
+  distinct() %>%
+  arrange(subjectID) %>%
+  filter(pre_post == "post") %>%
+  select(subjectID)
+
+# Create a list of samples from pre that also had a post
+pre.post.list <- inner_join(pre.list, post.list, by="subjectID")
+
+# Subset data to only include samples with a matched pre- and post-vaccination sample at Dose 1
+ps.fam.pre.post <- left_join(pre.post.list, ps.fam.enriched, by = "subjectID")
+ps.fam.pre.post %>% select(subjectID) %>% distinct() #Check
+
+# Calculate presence and absence of each viral family at pre and post vaccination in sample subset
+ps.fam.pre.post.pa <- ps.fam.pre.post %>%
+  select(subjectID, pre_post, Family, Abundance) %>%
+  mutate(PA = ifelse(Abundance > 10, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(Family)
+ps.fam.pre.post.pa
+
+ps.fam.pre.post.perc_pos <- ps.fam.pre.post %>%
+  select(subjectID, pre_post, Family, Abundance) %>%
+  group_by(subjectID, pre_post, Family) %>%
+  mutate(sum_ab = sum(Abundance)) %>%
+  ungroup() %>%
+  select(-Abundance) %>%
+  mutate(PA = ifelse(sum_ab > 0, 1, 0)) %>%
+  select(-sum_ab) %>%
+  distinct() %>%
+  #filter(Family == "Picornaviridae") %>%
+  select(-subjectID) %>%
+  filter(PA != 0) %>%
+  group_by(pre_post, Family) %>%
+  mutate(sum_present = sum(PA)) %>%
+  mutate(num_samples = 7) %>%
+  mutate(perc_pos = 100*(sum_present / num_samples)) %>%
+  distinct()
+
+ps.fam.pre.post.perc_pos$pre_post <- factor(ps.fam.pre.post.perc_pos$pre_post, levels = c("pre", "post"))
+
+ggplot(ps.fam.pre.post.perc_pos, aes(x = pre_post, y = perc_pos)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Family) +
+  labs(x = "", y = "% positive samples")
+
+ggplot(ps.fam.pre.post.perc_pos, aes(x = pre_post, y = sum_present)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Family) +
+  labs(x = "", y = "% positive samples")
+  
+ps.fam.pre.post.perc_pos %>%
+  filter(Family == "Picornaviridae")
+
+```
+
+```{r arrange-all-family-plots}
+ggarrange(p.family.seroconverison, p.all.fisher, ncol = 2, common.legend = TRUE)
+
+
+
+```
+
+```{r figure-1}
+#ggarrange(p.family.id.quant, p.family.id.scatter, p.fam.dose.hm, ncol = 3,
+#          labels = c("A)", "B)", "C)"), widths = c(0.2, 0.3, 0.6),
+#          font.label = list(size = 10))
+
+cowplot::plot_grid(p.family.id.quant, p.family.id.scatter, p.fam.dose,
+                   align = "h", axis = "b",
+                   ncol = 3,
+                   rel_widths = c(0.25, 0.3, 0.3),
+                   labels = c("A)", "B)", "C)"))
+
+```
+
+```{r family-ratio-analysis}
+# All Family Ratio Analysis
+ps.aln.quadrant <- ps.aln %>%
+  ungroup() %>%
+  filter(query_type == "aa") %>%
+  group_by(Family) %>%
+  select(Family, alignment_length_adjusted, percent_id) %>%
+  mutate(Quadrant = ifelse((alignment_length_adjusted < 150 & percent_id > 0.7), "Q1", 
+                     ifelse((alignment_length_adjusted > 150 & percent_id > 0.7), "Q2", 
+                            ifelse((alignment_length_adjusted < 150 & percent_id < 0.7), "Q3", "Q4")))) %>%
+  ungroup() %>%
+  group_by(Family, Quadrant) %>%
+  tally(name = "Quad_Tally") %>%
+  ungroup() %>%
+  group_by(Family) %>%
+  mutate(Total = sum(Quad_Tally)) %>%
+  ungroup() %>%
+  mutate(Quad_Percent = 100*(Quad_Tally / Total))
+
+ p.quad.summary.all <- ggplot(ps.aln.quadrant, aes(x = Quadrant, y = Quad_Percent, color = Family, group = Family)) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(alpha = 0.6) +
+  labs(y = "% Reads per Quadrant") +
+  theme(legend.position = "null") +
+   facet_wrap(~Family)
+ 
+# Enriched Family Quadrant Analysis
+ ps.aln.enriched.quadrant <- ps.aln.enriched %>%
+  ungroup() %>%
+  filter(query_type == "aa") %>%
+  group_by(Family) %>%
+  select(Family, alignment_length_adjusted, percent_id) %>%
+  mutate(Quadrant = ifelse((alignment_length_adjusted < 150 & percent_id > 0.7), "Q1", 
+                     ifelse((alignment_length_adjusted > 150 & percent_id > 0.7), "Q2", 
+                            ifelse((alignment_length_adjusted < 150 & percent_id < 0.7), "Q3", "Q4")))) %>%
+  ungroup() %>%
+  group_by(Family, Quadrant) %>%
+  tally(name = "Quad_Tally") %>%
+  ungroup() %>%
+  group_by(Family) %>%
+  mutate(Total = sum(Quad_Tally)) %>%
+  ungroup() %>%
+  mutate(Quad_Percent = 100*(Quad_Tally / Total))
+ps.aln.enriched.quadrant
+
+p.quad.tally <- ggplot(ps.aln.enriched.quadrant, aes(x = Family, y = Quad_Tally, fill = Quadrant)) +
+  geom_bar(stat = "identity") +
+  labs(y = "Number per Quadrant") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+p.quad.percent <- ggplot(ps.aln.enriched.quadrant, aes(x = Family, y = Quad_Percent, fill = Quadrant)) +
+  geom_bar(stat = "identity") +
+  labs(y = "% Reads per Quadrant") +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+p.quad.summary <- ggplot(ps.aln.enriched.quadrant, aes(x = Quadrant, y = Quad_Percent, color = Family, group = Family)) +
+  geom_point(size = 2, alpha = 0.6) +
+  geom_line(alpha = 0.6) +
+  scale_y_log10() +
+  labs(y = "% Reads per Quadrant")
+
+ggarrange(p.quad.tally, p.quad.percent, p.quad.summary, ncol = 3, legend = "bottom", labels = c("A)", "B)", "C)"))
+
+# Closer look at just anelloviridae
+ps.aln.enriched.quadrant %>%
+  filter(Family == "Anelloviridae") %>%
+  group_by(Quadrant) %>%
+  summarise(avg_percent = mean(Quad_Percent))
+
+```
+
+```{r minor-players-analysis}
+# Filter low abundant families
+ps.aln.filt.minor <- ps.aln %>%
+  filter(percent_id > 0.70) %>%
+  filter(alignment_length_adjusted > 150) %>%
+  droplevels() %>%
+  group_by(Family) %>%
+  mutate(Count = n())
+
+ggplot(ps.aln.filt.minor, aes(x = alignment_length_adjusted, y = percent_id, color = query_type)) +
+  geom_jitter(position = position_jitter(width = 0.05, height = 0.05), size = 1, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Family, Count, .fun = "median", .desc = TRUE)) +
+  geom_hline(aes(yintercept = 0.7), lty = 2, color = "gray") + # strange ggplot2 behaviour. Have to add this as an aes() if using fct_reorder
+  geom_vline(aes(xintercept = 150), lty = 2, color = "gray") +
+  labs(x = "Alignment Length", y = "% ID", color = "Baltimore Classification") +
+  theme(axis.text = element_text(size = 8)) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) +
+  theme(legend.position = "right")
+
+ps.aln.filt.minor.families <- ps.aln.filt.minor %>%
+  filter(Family %in% c("Virgaviridae",
+                       "Endornaviridae",
+                       "Genomoviridae",
+                       "Chrysoviridae",
+                       "Papillomaviridae",
+                       "Paramyxoviridae"))
+
+ps.aln.filt.minor.families %>%
+  group_by(Family) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(ps.aln.filt.minor.families, aes(x = subjectID, y = Abundance, color = Family)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity, nrow = 3) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+ggplot(ps.aln.filt.minor.families, aes(x = subjectID, y = scaled_abundance_median, fill = Family)) +
+  geom_bar(stat = "identity") +
+  facet_grid(Family~vaccination_proximity, scales = "free_x") +
+  theme(axis.text.x = element_blank()) +
+  labs(y = "Scaled Abundance", x = "Subject")
+
+```
+# Picornaviridae Analysis
+
+```{r picornaviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.picorna <- ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.picorna %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+picorna.genus.keep <- unique(ps.aln.enriched.picorna$Genus)
+
+# Genus Count Analysis
+ps.ge.picorna <- ps.ge %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.picorna.dose.ge <- ggplot(ps.ge.picorna, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 2, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 4) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylim(-1,6)
+
+# Add summary reference point
+p.picorna.dose.ge <- add_summary(data = ps.ge.picorna, p.picorna.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.picorna.dose.ge
+
+# Kruskal-wallis test
+ps.ge.picorna %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.picorna.dose.ge <- ps.ge.picorna %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.picorna.dose.ge
+
+# Quick summary of significance
+stat.test.picorna.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.picorna.sero.ge <- ggplot(ps.ge.picorna, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.picorna.sero.ge <- add_summary(data = ps.ge.picorna, p.picorna.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.picorna.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.picorna.sero.ge.DS1 <- ps.ge.picorna %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.picorna.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.picorna.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.picorna.sero.ge.DS2 <- ps.ge.picorna %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.picorna.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.picorna.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.picorna.sero.ge.DS3 <- ps.ge.picorna %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.picorna.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.picorna.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r enteroC-separated}
+# Separate enteroC from other enteros and genera with a new label called "type"
+df.entero <- ps.sp %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  filter(Genus == "Enterovirus") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup() %>%
+  mutate(type = ifelse(Species == "Enterovirus C", "Enterovirus C", "Enterovirus B"))
+
+df.other.picorna <- ps.sp %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  filter(Genus != "Enterovirus") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup() %>%
+  mutate(type = ifelse(Genus == "Cosavirus", "Cosavirus",
+                       ifelse(Genus == "Parechovirus", "Parechovirus", "Salivirus")))
+
+picorna.type <- bind_rows(df.entero, df.other.picorna)
+
+# Reorder factors
+picorna.type$type <- as.factor(picorna.type$type)
+class(picorna.type$type)
+levels(picorna.type$type)
+
+picorna.type$type <- factor(picorna.type$type, levels = c("Enterovirus C",
+                                                          "Enterovirus B",
+                                                          "Parechovirus",
+                                                          "Salivirus",
+                                                          "Cosavirus"))
+
+# Per Dose plots
+p.nonenteroC <- ggplot(picorna.type, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 2, width = 0.2, alpha = 0.4) +
+  facet_wrap(~type, ncol = 1) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylim(-1,6)
+p.nonenteroC
+
+# Stats
+# Kruskal-wallis test
+picorna.type %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(type) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+  arrange(p.adj.signif)
+
+# Dunn's post test
+picorna.type %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(type) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif) %>%
+  filter(type == "Salivirus")
+
+# Pre-post
+# Create a list of samples from pre that also had a post
+pre.post.list <- inner_join(pre.list, post.list, by="subjectID")
+
+# Subset data to only include samples with a matched pre- and post-vaccination sample at Dose 1
+ps.entero.pre.post <- left_join(pre.post.list, picorna.type, by = "subjectID")
+ps.entero.pre.post %>% select(subjectID) %>% distinct() #Check
+
+ps.entero.pre.post.per_pos <- ps.entero.pre.post %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(subjectID, pre_post, Species, Abundance) %>%
+  group_by(subjectID, pre_post, Species) %>%
+  mutate(sum_ab = sum(Abundance)) %>%
+  ungroup() %>%
+  select(-Abundance) %>%
+  mutate(PA = ifelse(sum_ab > 1, 1, 0)) %>%
+  select(-sum_ab) %>%
+  distinct() %>%
+  #filter(Family == "Picornaviridae") %>%
+  select(-subjectID) %>%
+  filter(PA != 0) %>%
+  group_by(pre_post, Species) %>%
+  mutate(sum_present = sum(PA)) %>%
+  mutate(num_samples = 7) %>%
+  mutate(perc_pos = 100*(sum_present / num_samples)) %>%
+  distinct() %>%
+  filter(Species != "Enterovirus") %>%
+  filter(Species != "unknown")
+
+ps.entero.pre.post.per_pos$pre_post <- factor(ps.entero.pre.post.per_pos$pre_post, levels = c("pre", "post"))
+
+# Make simplified list for response to editors
+df.pre_post.tokeep <- c("Enterovirus B",
+                        "Enterovirus C",
+                        "Cosavirus A",
+                        "Human salivirus",
+                        "Parechovirus A")
+
+ggplot(filter(ps.entero.pre.post.per_pos, Species %in% df.pre_post.tokeep), aes(x = pre_post, y = perc_pos)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~Species) +
+  labs(x = "", y = "% positive samples")
+
+ps.entero.pre.post.per_pos %>%
+  filter(Species == "Salivirus")
+
+```
+
+```{r picornaviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.picorna.sp <- ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.picorna.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+
+df <- ps.aln.enriched %>%
+  ungroup() %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  select(subjectID, Genus, Species, seroconversion, vaccination_proximity) %>%
+  group_by(vaccination_proximity, seroconversion, Species) %>%
+  mutate(count = n()) %>%
+  filter(count > 10) %>%
+  ungroup() %>%
+  distinct()
+
+ggplot(df, aes(x = Species, y = count, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_log10() +
+  facet_wrap(~vaccination_proximity, ncol = 3) +
+  coord_flip() +
+  labs(fill = "Seroconversion", y = "Count")
+
+# Filter out low abundant species
+ps.aln.enriched.picorna.sp <- ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.picorna.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+picorna.species.keep <- unique(ps.aln.enriched.picorna.sp$Species)
+
+# Genus Count Analysis
+ps.sp.picorna <- ps.sp %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  filter(Species %in% picorna.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(scaled_abundance_median)) %>%
+  ungroup() %>%
+  filter(Species != "unknown") %>%
+  droplevels()
+
+# Per Dose plots
+p.picorna.dose.sp <- ggplot(ps.sp.picorna, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  #facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 6) +
+  facet_wrap(~Species) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-1,5))
+
+# Add summary reference point
+p.picorna.dose.sp <- add_summary(data = ps.sp.picorna, p.picorna.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.picorna.dose.sp
+
+# Kruskal-wallis test
+ps.sp.picorna %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.picorna.dose.sp <- ps.sp.picorna %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.picorna.dose.sp
+
+# Quick summary of significance
+stat.test.picorna.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.picorna.sero.sp <- ggplot(ps.sp.picorna, aes(x = seroconversion, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_grid(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10]))
+p.picorna.sero.sp
+
+p.picorna.sero.sp <- add_summary(data = ps.sp.picorna, p.picorna.sero.sp, "mean_sd", color = "black", size = 0.3) # Note: You should redraw the original plot to update these aesthetics
+p.picorna.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.picorna.sero.sp.DS1 <- ps.sp.picorna %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.picorna.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.picorna.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.picorna.sero.sp.DS2 <- ps.sp.picorna %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.picorna.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.picorna.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.picorna.sero.sp.DS3 <- ps.sp.picorna %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.picorna.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.picorna.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+
+```{r picorna-genus-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+# Genus level Fisher's exact testing
+ps.ge.picorna.pa <- ps.ge.picorna %>%
+  select(subjectID, vaccination_proximity, Genus, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.ge.picorna.xtab <- ps.ge.picorna.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.ge.picorna.xtab
+
+# Prepare contingency table
+p.ge.picorna.xtab <- ggplot(ps.ge.picorna.xtab, aes(x = Genus, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.ge.picorna.fishers.DS1 <- ps.ge.picorna.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.ge.picorna.fishers.DS1
+
+ps.ge.picorna.fishers.DS2 <- ps.ge.picorna.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.ge.picorna.fishers.DS2
+
+ps.ge.picorna.fishers.DS3 <- ps.ge.picorna.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.ge.picorna.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.ge.picorna.pvalues.DS1 <- ggplot(ps.ge.picorna.fishers.DS1, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.ge.picorna.pvalues.DS2 <- ggplot(ps.ge.picorna.fishers.DS2, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.ge.picorna.pvalues.DS3 <- ggplot(ps.ge.picorna.fishers.DS3, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.ge.picorna.xtab,
+          ggarrange(p.ge.picorna.pvalues.DS1, p.ge.picorna.pvalues.DS2, p.ge.picorna.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r picorna-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=10
+
+# Non-specific taxonomies
+nonspecific.picornas <- c("Salivirus sp.",
+                         "Salivirus",
+                         "Human salivirus",
+                         "Human enterovirus",
+                         "Human cosavirus",
+                         "Enterovirus",
+                         "Cosavirus")
+
+# Species level Fisher's exact testing
+ps.sp.picorna.pa <- ps.sp.picorna %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+# Create presence / absence table
+ps.sp.picorna.xtab <- ps.sp.picorna.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.sp.picorna.xtab
+
+# Prepare contingency table
+p.sp.picorna.xtab <- ggplot(ps.sp.picorna.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.picorna.fishers.DS1 <- ps.sp.picorna.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.picorna.fishers.DS1
+
+ps.sp.picorna.fishers.DS2 <- ps.sp.picorna.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.picorna.fishers.DS2
+
+ps.sp.picorna.fishers.DS3 <- ps.sp.picorna.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.picorna.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.picorna.pvalues.DS1 <- ggplot(ps.sp.picorna.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.picorna.pvalues.DS2 <- ggplot(ps.sp.picorna.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.picorna.pvalues.DS3 <- ggplot(ps.sp.picorna.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.picorna.xtab,
+          ggarrange(p.sp.picorna.pvalues.DS1, p.sp.picorna.pvalues.DS2, p.sp.picorna.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r entero-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=10
+
+# Non-specific taxonomies
+nonspecific.picornas <- c("Human enterovirus",
+                         "Enterovirus")
+
+# Species level Fisher's exact testing
+ps.sp.entero.pa <- ps.sp.picorna %>%
+filter(Genus == "Enterovirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+# Create presence / absence table
+ps.sp.entero.xtab <- ps.sp.entero.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.sp.entero.xtab
+
+# Prepare contingency table
+p.sp.entero.xtab <- ggplot(ps.sp.entero.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.entero.fishers.DS1 <- ps.sp.entero.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.entero.fishers.DS1
+
+ps.sp.entero.fishers.DS2 <- ps.sp.entero.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.entero.fishers.DS2
+
+ps.sp.entero.fishers.DS3 <- ps.sp.entero.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.entero.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.entero.pvalues.DS1 <- ggplot(ps.sp.entero.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.entero.pvalues.DS2 <- ggplot(ps.sp.entero.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.entero.pvalues.DS3 <- ggplot(ps.sp.entero.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.entero.xtab,
+          ggarrange(p.sp.entero.pvalues.DS1, p.sp.entero.pvalues.DS2, p.sp.entero.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r parecho-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=10
+
+# Species level Fisher's exact testing
+ps.sp.parecho.pa <- ps.sp.picorna %>%
+filter(Genus == "Parechovirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.sp.parecho.xtab <- ps.sp.parecho.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.sp.parecho.xtab
+
+# Prepare contingency table
+p.sp.parecho.xtab <- ggplot(ps.sp.parecho.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.parecho.fishers.DS1 <- ps.sp.parecho.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parecho.fishers.DS1
+
+ps.sp.parecho.fishers.DS2 <- ps.sp.parecho.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parecho.fishers.DS2
+
+ps.sp.parecho.fishers.DS3 <- ps.sp.parecho.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parecho.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.parecho.pvalues.DS1 <- ggplot(ps.sp.parecho.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.parecho.pvalues.DS2 <- ggplot(ps.sp.parecho.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.parecho.pvalues.DS3 <- ggplot(ps.sp.parecho.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.parecho.xtab,
+          ggarrange(p.sp.parecho.pvalues.DS1, p.sp.parecho.pvalues.DS2, p.sp.parecho.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r sali-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=10
+
+# Non-specific taxonomies
+nonspecific.picornas <- c("Salivirus sp.",
+                         "Salivirus",
+                         "Human salivirus")
+
+# Species level Fisher's exact testing
+ps.sp.sali.pa <- ps.sp.picorna %>%
+filter(Genus == "Salivirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+# Create presence / absence table
+ps.sp.sali.xtab <- ps.sp.sali.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.sp.sali.xtab
+
+# Prepare contingency table
+p.sp.sali.xtab <- ggplot(ps.sp.sali.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.sali.fishers.DS1 <- ps.sp.sali.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.sali.fishers.DS1
+
+ps.sp.sali.fishers.DS2 <- ps.sp.sali.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.sali.fishers.DS2
+
+ps.sp.sali.fishers.DS3 <- ps.sp.sali.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.sali.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.sali.pvalues.DS1 <- ggplot(ps.sp.sali.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.sali.pvalues.DS2 <- ggplot(ps.sp.sali.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.sali.pvalues.DS3 <- ggplot(ps.sp.sali.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.sali.xtab,
+          ggarrange(p.sp.sali.pvalues.DS1, p.sp.sali.pvalues.DS2, p.sp.sali.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r cosa-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+# Non-specific taxonomies
+nonspecific.picornas <- c("Cosavirus",
+                          "Human cosavirus")
+
+# Species level Fisher's exact testing
+ps.sp.cosa.pa <- ps.sp.picorna %>%
+filter(Genus == "Cosavirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+# Create presence / absence table
+ps.sp.cosa.xtab <- ps.sp.cosa.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ps.sp.cosa.xtab
+
+# Prepare contingency table
+p.sp.cosa.xtab <- ggplot(ps.sp.cosa.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.cosa.fishers.DS1 <- ps.sp.cosa.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.cosa.fishers.DS1
+
+ps.sp.cosa.fishers.DS2 <- ps.sp.cosa.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.cosa.fishers.DS2
+
+ps.sp.cosa.fishers.DS3 <- ps.sp.cosa.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.cosa.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.cosa.pvalues.DS1 <- ggplot(ps.sp.cosa.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.cosa.pvalues.DS2 <- ggplot(ps.sp.cosa.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.cosa.pvalues.DS3 <- ggplot(ps.sp.cosa.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.cosa.xtab,
+          ggarrange(p.sp.cosa.pvalues.DS1, p.sp.cosa.pvalues.DS2, p.sp.cosa.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r}
+noncosa.pa <- ps.sp.picorna %>%
+  filter(Genus != "Cosavirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 10, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+cosa.pa <- ps.sp.picorna %>%
+  filter(Genus == "Cosavirus") %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 1, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity) %>%
+  filter(!Species %in% nonspecific.picornas)
+
+sp.pa <- bind_rows(noncosa.pa, cosa.pa)
+
+# Create presence / absence table
+sp.pa.xtab <- sp.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+sp.pa.xtab
+
+ggplot(sp.pa.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+
+```
+
+```{r anello-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+ps.sp.anello <- ps.sp %>%
+  filter(Family == "Anelloviridae")
+
+# Species level Fisher's exact testing
+ps.sp.anello.pa <- ps.sp.anello %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.sp.anello.xtab <- ps.sp.anello.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`0` = 0, `1` = 0, Percent = 0))
+ps.sp.anello.xtab
+
+# Prepare contingency table
+p.sp.anello.xtab <- ggplot(ps.sp.anello.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.anello.fishers.DS1 <- ps.sp.anello.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.anello.fishers.DS1
+
+ps.sp.anello.fishers.DS2 <- ps.sp.anello.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.anello.fishers.DS2
+
+ps.sp.anello.fishers.DS3 <- ps.sp.anello.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.anello.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.anello.pvalues.DS1 <- ggplot(ps.sp.anello.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.anello.pvalues.DS2 <- ggplot(ps.sp.anello.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.anello.pvalues.DS3 <- ggplot(ps.sp.anello.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.anello.xtab,
+          ggarrange(p.sp.anello.pvalues.DS1, p.sp.anello.pvalues.DS2, p.sp.anello.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r parvo-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+ps.sp.parvo <- ps.sp %>%
+  filter(Family == "Parvoviridae")
+
+# Species level Fisher's exact testing
+ps.sp.parvo.pa <- ps.sp.parvo %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.sp.parvo.xtab <- ps.sp.parvo.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`0` = 0, `1` = 0, Percent = 0))
+ps.sp.parvo.xtab
+
+# Prepare contingency table
+p.sp.parvo.xtab <- ggplot(ps.sp.parvo.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.parvo.fishers.DS1 <- ps.sp.parvo.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parvo.fishers.DS1
+
+ps.sp.parvo.fishers.DS2 <- ps.sp.parvo.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parvo.fishers.DS2
+
+ps.sp.parvo.fishers.DS3 <- ps.sp.parvo.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.parvo.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.parvo.pvalues.DS1 <- ggplot(ps.sp.parvo.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.parvo.pvalues.DS2 <- ggplot(ps.sp.parvo.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.parvo.pvalues.DS3 <- ggplot(ps.sp.parvo.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.parvo.xtab,
+          ggarrange(p.sp.parvo.pvalues.DS1, p.sp.parvo.pvalues.DS2, p.sp.parvo.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+# Parvo by IgA levels at DS1
+parvo.IgA <- ps.ge.parvo %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+p.parvo.IgA <- ggplot(parvo.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+parvo.IgA.cor <- parvo.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+parvo.IgA.cor
+
+DS1.p.parvo <- parvo.IgA.cor$p_val
+DS1.padj.parvosl <- as_tibble(p.adjust(DS1.p.parvo, method = "holm"))
+cbind(parvo.IgA.cor, DS1.padj.parvo)
+
+```
+
+```{r astro-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+ps.sp.astro <- ps.sp %>%
+  filter(Family == "Astroviridae")
+
+# Species level Fisher's exact testing
+ps.sp.astro.pa <- ps.sp.astro %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.sp.astro.xtab <- ps.sp.astro.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`0` = 0, `1` = 0, Percent = 0))
+ps.sp.astro.xtab
+
+# Prepare contingency table
+p.sp.astro.xtab <- ggplot(ps.sp.astro.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.astro.fishers.DS1 <- ps.sp.astro.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.astro.fishers.DS1
+
+ps.sp.astro.fishers.DS2 <- ps.sp.astro.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.astro.fishers.DS2
+
+ps.sp.astro.fishers.DS3 <- ps.sp.astro.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.astro.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.astro.pvalues.DS1 <- ggplot(ps.sp.astro.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.astro.pvalues.DS2 <- ggplot(ps.sp.astro.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.astro.pvalues.DS3 <- ggplot(ps.sp.astro.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.astro.xtab,
+          ggarrange(p.sp.astro.pvalues.DS1, p.sp.astro.pvalues.DS2, p.sp.astro.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+```{r calici-species-fishers}
+# Set abundance threshold. Higher for more abundant viruses, lower for less abundant. set as 1 for 'all' abundances
+ab_thresh=1
+
+ps.sp.calici <- ps.sp %>%
+  filter(Family == "Caliciviridae")
+
+# Species level Fisher's exact testing
+ps.sp.calici.pa <- ps.sp.calici %>%
+  select(subjectID, vaccination_proximity, Species, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > ab_thresh, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ps.sp.calici.xtab <- ps.sp.calici.pa %>%
+  group_by(vaccination_proximity, Species, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`0` = 0, `1` = 0, Percent = 0))
+ps.sp.calici.xtab
+
+# Prepare contingency table
+p.sp.calici.xtab <- ggplot(ps.sp.calici.xtab, aes(x = Species, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive")
+
+ps.sp.calici.fishers.DS1 <- ps.sp.calici.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.calici.fishers.DS1
+
+ps.sp.calici.fishers.DS2 <- ps.sp.calici.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.calici.fishers.DS2
+
+ps.sp.calici.fishers.DS3 <- ps.sp.calici.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(Species) %>%
+  summarize(pvalue = fisher.test(alternative = "less", matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ps.sp.calici.fishers.DS3
+
+# P-value / p=adjusted assessment
+p.sp.calici.pvalues.DS1 <- ggplot(ps.sp.calici.fishers.DS1, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS1") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.calici.pvalues.DS2 <- ggplot(ps.sp.calici.fishers.DS2, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS2") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+p.sp.calici.pvalues.DS3 <- ggplot(ps.sp.calici.fishers.DS3, aes(x = Species, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Species, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1) +
+  labs(title = "DS3") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggarrange(p.sp.calici.xtab,
+          ggarrange(p.sp.calici.pvalues.DS1, p.sp.calici.pvalues.DS2, p.sp.calici.pvalues.DS3, ncol = 3
+                   ), nrow = 2)
+
+```
+
+##################
+
+
+```{r additional-sabin-opv-analysis}
+# One sample had a particularly high umber of reads mapping to sabin-2 of the OPV
+sabin.high.sample.aln <- ps.aln.enriched.picorna.sp %>%
+  filter(Sample == "M345-I5061-19826-George-Armah-465-NEBNextIndex36-CCAACAATCTCGT_S10")
+
+# It looks like hecatomb is only able to classify this as Enterovirus C
+# So some of the Enterovirus C reads are likely from OPV
+sabin.high.sample.aln %>%
+  group_by(Genus, Species) %>%
+  tally()
+
+# Remove all potential OPV-sabine strain reads (entero C)
+ps.sp.picorna.no_opv <- ps.sp.picorna %>%
+  filter(Species != "Enterovirus C") %>%
+  filter(Species != "Enterovirus") %>%
+  droplevels()
+
+# Fishers calculation preperations
+ps.sp.picorna.no_opv %>%
+  filter(vaccination_proximity == "DS1") %>%
+  filter(scaled_abundance_median > 0) %>%
+  select(Species, seroconversion) %>%
+  group_by(Species, seroconversion) %>%
+  tally()
+  tabyl(Species, seroconversion) %>%
+  arrange(Species) %>%
+  knitr::kable()
+
+ps.sp.anello%>%
+  filter(Species == "TTV-like mini virus") %>%
+  select(Genus, Species)
+
+```
+
+# Parvoviridae Analysis
+
+```{r Parvoviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Parvoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.parvo <- ps.aln.enriched %>%
+  filter(Family == "Parvoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.parvo %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+parvo.genus.keep <- unique(ps.aln.enriched.parvo$Genus)
+
+# Genus Count Analysis
+ps.ge.parvo <- ps.ge %>%
+  filter(Genus %in% parvo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.parvo.dose.ge <- ggplot(ps.ge.parvo, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.parvo.dose.ge <- add_summary(data = ps.ge.parvo, p.parvo.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.parvo.dose.ge
+
+# Kruskal-wallis test
+ps.ge.parvo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.parvo.dose.ge <- ps.ge.parvo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.parvo.dose.ge
+
+# Quick summary of significance
+stat.test.parvo.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.parvo.sero.ge <- ggplot(ps.ge.parvo, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.parvo.sero.ge <- add_summary(data = ps.ge.parvo, p.parvo.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.parvo.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.parvo.sero.ge.DS1 <- ps.ge.parvo %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.parvo.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.parvo.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.parvo.sero.ge.DS2 <- ps.ge.parvo %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.parvo.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.parvo.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.parvo.sero.ge.DS3 <- ps.ge.parvo %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.parvo.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.parvo.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+# What species of parovirus are identified?
+ps.aln.enriched.parvo %>%
+  select(Genus, Species) %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+```
+
+```{r Parvoviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.parvo.sp <- ps.aln.enriched %>%
+  filter(Family == "Parvoviridae") %>%
+  filter(Genus %in% parvo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.parvo.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.parvo.sp <- ps.aln.enriched %>%
+  filter(Family == "Parvoviridae") %>%
+  filter(Genus %in% parvo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.parvo.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+parvo.species.keep <- unique(ps.aln.enriched.parvo.sp$Species)
+
+# Genus Count Analysis
+ps.sp.parvo <- ps.sp %>%
+  filter(Family == "Parvoviridae") %>%
+  filter(Genus %in% parvo.genus.keep) %>%
+  filter(Species %in% parvo.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.parvo.dose.sp <- ggplot(ps.sp.parvo, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 6) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.parvo.dose.sp <- add_summary(data = ps.sp.parvo, p.parvo.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.parvo.dose.sp
+
+# Kruskal-wallis test
+ps.sp.parvo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.parvo.dose.sp <- ps.sp.parvo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.parvo.dose.sp
+
+# Quick summary of significance
+stat.test.parvo.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.parvo.sero.sp <- ggplot(ps.sp.parvo, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.parvo.sero.sp <- add_summary(data = ps.sp.parvo, p.parvo.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.parvo.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.parvo.sero.sp.DS1 <- ps.sp.parvo %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.parvo.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.parvo.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.parvo.sero.sp.DS2 <- ps.sp.parvo %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.parvo.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.parvo.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.parvo.sero.sp.DS3 <- ps.sp.parvo %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.parvo.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.parvo.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+# Heatmap
+ps.parvo.species.mean <- ps.sp.parvo %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Species, vaccination_proximity) %>%
+    summarise(species_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+p.parvo.species.hm <- ggplot(ps.parvo.species.mean, aes(x = vaccination_proximity, y = reorder(Species, species_mean), fill = log2(species_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Parvoviridae Species", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10))
+p.parvo.species.hm
+
+```
+
+```{r parvo-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.parvo.pa <- ps.ge.parvo %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.parvo.xtab <- ps.ge.parvo.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.parvo.xtab
+
+p.ge.parvo.xtab <- ggplot(ps.ge.parvo.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.parvo.fishers <- ps.ge.parvo.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.parvo.fishers
+
+ggplot(ps.ge.parvo.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# Reoviridae Analysis
+
+```{r Reoviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Reoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.reo <- ps.aln.enriched %>%
+  filter(Family == "Reoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.reo %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+reo.genus.keep <- unique(ps.aln.enriched.reo$Genus)
+
+# Genus Count Analysis
+ps.ge.reo <- ps.ge %>%
+  filter(Genus %in% reo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.reo.dose.ge <- ggplot(ps.ge.reo, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.reo.dose.ge <- add_summary(data = ps.ge.reo, p.reo.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.reo.dose.ge
+
+# Kruskal-wallis test
+ps.ge.reo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.reo.dose.ge <- ps.ge.reo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.reo.dose.ge
+
+# Quick summary of significance
+stat.test.reo.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.reo.sero.ge <- ggplot(ps.ge.reo, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.reo.sero.ge <- add_summary(data = ps.ge.reo, p.reo.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.reo.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.reo.sero.ge.DS1 <- ps.ge.reo %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.reo.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.reo.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.reo.sero.ge.DS2 <- ps.ge.reo %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.reo.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.reo.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.reo.sero.ge.DS3 <- ps.ge.reo %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.reo.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.reo.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r Reoviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.reo.sp <- ps.aln.enriched %>%
+  filter(Family == "Reoviridae") %>%
+  filter(Genus %in% reo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.reo.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.reo.sp <- ps.aln.enriched %>%
+  filter(Family == "Reoviridae") %>%
+  filter(Genus %in% reo.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.reo.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+reo.species.keep <- unique(ps.aln.enriched.reo.sp$Species)
+
+# Genus Count Analysis
+ps.sp.reo <- ps.sp %>%
+  filter(Family == "Reoviridae") %>%
+  filter(Genus %in% reo.genus.keep) %>%
+  filter(Species %in% reo.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.reo.dose.sp <- ggplot(ps.sp.reo, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 2) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.reo.dose.sp <- add_summary(data = ps.sp.reo, p.reo.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.reo.dose.sp
+
+# Kruskal-wallis test
+ps.sp.reo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.reo.dose.sp <- ps.sp.reo %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.reo.dose.sp
+
+# Quick summary of significance
+stat.test.reo.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.reo.sero.sp <- ggplot(ps.sp.reo, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.reo.sero.sp <- add_summary(data = ps.sp.reo, p.reo.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.reo.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.reo.sero.sp.DS1 <- ps.sp.reo %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.reo.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.reo.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.reo.sero.sp.DS2 <- ps.sp.reo %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.reo.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.reo.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.reo.sero.sp.DS3 <- ps.sp.reo %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.reo.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.reo.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+# Heatmap
+ps.reo.species.mean <- ps.sp.reo %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Species, vaccination_proximity) %>%
+    summarise(species_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+p.reo.species.hm <- ggplot(ps.reo.species.mean, aes(x = vaccination_proximity, y = reorder(Species, species_mean), fill = log2(species_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Reoviridae Species", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10))
+p.reo.species.hm
+
+```
+```{r reo-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.reo.pa <- ps.ge.reo %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.reo.xtab <- ps.ge.reo.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.reo.xtab
+
+p.ge.reo.xtab <- ggplot(ps.ge.reo.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.reo.fishers <- ps.ge.reo.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.reo.fishers
+
+ggplot(ps.ge.reo.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# Astroviridae Analysis
+
+```{r Astroviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Astroviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.astro <- ps.aln.enriched %>%
+  filter(Family == "Astroviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.astro %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+astro.genus.keep <- unique(ps.aln.enriched.astro$Genus)
+
+# Genus Count Analysis
+ps.ge.astro <- ps.ge %>%
+  filter(Genus %in% astro.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.astro.dose.ge <- ggplot(ps.ge.astro, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.astro.dose.ge <- add_summary(data = ps.ge.astro, p.astro.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.astro.dose.ge
+
+# Kruskal-wallis test
+ps.ge.astro %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.astro.dose.ge <- ps.ge.astro %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.astro.dose.ge
+
+# Quick summary of significance
+stat.test.astro.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.astro.sero.ge <- ggplot(ps.ge.astro, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.astro.sero.ge <- add_summary(data = ps.ge.astro, p.astro.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.astro.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.astro.sero.ge.DS1 <- ps.ge.astro %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.astro.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.astro.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.astro.sero.ge.DS2 <- ps.ge.astro %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.astro.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.astro.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.astro.sero.ge.DS3 <- ps.ge.astro %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.astro.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.astro.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r Astroviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.astro.sp <- ps.aln.enriched %>%
+  filter(Family == "Astroviridae") %>%
+  filter(Genus %in% astro.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.astro.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.astro.sp <- ps.aln.enriched %>%
+  filter(Family == "Astroviridae") %>%
+  filter(Genus %in% astro.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.astro.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+astro.species.keep <- unique(ps.aln.enriched.astro.sp$Species)
+
+# Genus Count Analysis
+ps.sp.astro <- ps.sp %>%
+  filter(Family == "Astroviridae") %>%
+  filter(Genus %in% astro.genus.keep) %>%
+  filter(Species %in% astro.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.astro.dose.sp <- ggplot(ps.sp.astro, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 5) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.astro.dose.sp <- add_summary(data = ps.sp.astro, p.astro.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.astro.dose.sp
+
+# Kruskal-wallis test
+ps.sp.astro %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.astro.dose.sp <- ps.sp.astro %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.astro.dose.sp
+
+# Quick summary of significance
+stat.test.astro.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.astro.sero.sp <- ggplot(ps.sp.astro, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.astro.sero.sp <- add_summary(data = ps.sp.astro, p.astro.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.astro.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.astro.sero.sp.DS1 <- ps.sp.astro %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.astro.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.astro.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.astro.sero.sp.DS2 <- ps.sp.astro %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.astro.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.astro.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.astro.sero.sp.DS3 <- ps.sp.astro %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.astro.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.astro.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+# Heatmap
+ps.astro.species.mean <- ps.sp.astro %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Species, vaccination_proximity) %>%
+    summarise(species_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+p.astro.species.hm <- ggplot(ps.astro.species.mean, aes(x = vaccination_proximity, y = reorder(Species, species_mean), fill = log2(species_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Astroviridae Species", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10))
+p.astro.species.hm
+
+```
+```{r astro-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.astro.pa <- ps.ge.astro %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.astro.xtab <- ps.ge.astro.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.astro.xtab
+
+p.ge.astro.xtab <- ggplot(ps.ge.astro.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.astro.fishers <- ps.ge.astro.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.astro.fishers
+
+ggplot(ps.ge.astro.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# Anelloviridae Analysis
+
+```{r Anelloviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Anelloviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.anello <- ps.aln.enriched %>%
+  filter(Family == "Anelloviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.anello %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+anello.genus.keep <- unique(ps.aln.enriched.anello$Genus)
+
+# Genus Count Analysis
+ps.ge.anello <- ps.ge %>%
+  filter(Genus %in% anello.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.anello.dose.ge <- ggplot(ps.ge.anello, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.anello.dose.ge <- add_summary(data = ps.ge.anello, p.anello.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.anello.dose.ge
+
+# Kruskal-wallis test
+ps.ge.anello %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.anello.dose.ge <- ps.ge.anello %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.anello.dose.ge
+
+# Quick summary of significance
+stat.test.anello.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.anello.sero.ge <- ggplot(ps.ge.anello, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.anello.sero.ge <- add_summary(data = ps.ge.anello, p.anello.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.anello.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.anello.sero.ge.DS1 <- ps.ge.anello %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.anello.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.anello.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.anello.sero.ge.DS2 <- ps.ge.anello %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.anello.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.anello.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.anello.sero.ge.DS3 <- ps.ge.anello %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.anello.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.anello.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r Anelloviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.anello.sp <- ps.aln.enriched %>%
+  filter(Family == "Anelloviridae") %>%
+  filter(Genus %in% anello.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.anello.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.anello.sp <- ps.aln.enriched %>%
+  filter(Family == "Anelloviridae") %>%
+  filter(Genus %in% anello.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.anello.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+anello.species.keep <- unique(ps.aln.enriched.anello.sp$Species)
+
+# Genus Count Analysis
+ps.sp.anello <- ps.sp %>%
+  filter(Family == "Anelloviridae") %>%
+  filter(Genus %in% anello.genus.keep) %>%
+  filter(Species %in% anello.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.anello.dose.sp <- ggplot(ps.sp.anello, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 5) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.anello.dose.sp <- add_summary(data = ps.sp.anello, p.anello.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.anello.dose.sp
+
+# Kruskal-wallis test
+ps.sp.anello %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.anello.dose.sp <- ps.sp.anello %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.anello.dose.sp
+
+# Quick summary of significance
+stat.test.anello.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.anello.sero.sp <- ggplot(ps.sp.anello, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.anello.sero.sp <- add_summary(data = ps.sp.anello, p.anello.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.anello.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.anello.sero.sp.DS1 <- ps.sp.anello %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.anello.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.anello.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.anello.sero.sp.DS2 <- ps.sp.anello %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.anello.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.anello.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.anello.sero.sp.DS3 <- ps.sp.anello %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.anello.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.anello.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+```{r anello-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.anello.pa <- ps.ge.anello %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.anello.xtab <- ps.ge.anello.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.anello.xtab
+
+p.ge.anello.xtab <- ggplot(ps.ge.anello.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.anello.fishers <- ps.ge.anello.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.anello.fishers
+
+ggplot(ps.ge.anello.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# Adenoviridae Analysis
+
+```{r Adenoviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Adenoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.adeno <- ps.aln.enriched %>%
+  filter(Family == "Adenoviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.adeno %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+adeno.genus.keep <- unique(ps.aln.enriched.adeno$Genus)
+
+# Genus Count Analysis
+ps.ge.adeno <- ps.ge %>%
+  filter(Genus %in% adeno.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.adeno.dose.ge <- ggplot(ps.ge.adeno, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.adeno.dose.ge <- add_summary(data = ps.ge.adeno, p.adeno.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.adeno.dose.ge
+
+# Kruskal-wallis test
+ps.ge.adeno %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.adeno.dose.ge <- ps.ge.adeno %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.adeno.dose.ge
+
+# Quick summary of significance
+stat.test.adeno.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.adeno.sero.ge <- ggplot(ps.ge.adeno, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.adeno.sero.ge <- add_summary(data = ps.ge.adeno, p.adeno.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.adeno.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.adeno.sero.ge.DS1 <- ps.ge.adeno %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.adeno.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.adeno.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.adeno.sero.ge.DS2 <- ps.ge.adeno %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.adeno.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.adeno.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.adeno.sero.ge.DS3 <- ps.ge.adeno %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.adeno.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.adeno.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r Adenoviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.adeno.sp <- ps.aln.enriched %>%
+  filter(Family == "Adenoviridae") %>%
+  filter(Genus %in% adeno.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.adeno.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.adeno.sp <- ps.aln.enriched %>%
+  filter(Family == "Adenoviridae") %>%
+  filter(Genus %in% adeno.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.adeno.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+adeno.species.keep <- unique(ps.aln.enriched.adeno.sp$Species)
+
+# Genus Count Analysis
+ps.sp.adeno <- ps.sp %>%
+  filter(Family == "Adenoviridae") %>%
+  filter(Genus %in% adeno.genus.keep) %>%
+  filter(Species %in% adeno.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.adeno.dose.sp <- ggplot(ps.sp.adeno, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 3) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.adeno.dose.sp <- add_summary(data = ps.sp.adeno, p.adeno.dose.sp, "mean_sd", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.adeno.dose.sp
+
+# Kruskal-wallis test
+ps.sp.adeno %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.adeno.dose.sp <- ps.sp.adeno %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.adeno.dose.sp
+
+# Quick summary of significance
+stat.test.adeno.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.adeno.sero.sp <- ggplot(ps.sp.adeno, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.adeno.sero.sp <- add_summary(data = ps.sp.adeno, p.adeno.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.adeno.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.adeno.sero.sp.DS1 <- ps.sp.adeno %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.adeno.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.adeno.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.adeno.sero.sp.DS2 <- ps.sp.adeno %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.adeno.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.adeno.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.adeno.sero.sp.DS3 <- ps.sp.adeno %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.adeno.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.adeno.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+# Heatmap
+ps.adeno.species.mean <- ps.sp.adeno %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Species, vaccination_proximity) %>%
+    summarise(species_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+p.adeno.species.hm <- ggplot(ps.adeno.species.mean, aes(x = vaccination_proximity, y = reorder(Species, species_mean), fill = log2(species_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Adenoviridae Species", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10))
+p.adeno.species.hm
+
+```
+```{r adeno-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.adeno.pa <- ps.ge.adeno %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.adeno.xtab <- ps.ge.adeno.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.adeno.xtab
+
+p.ge.adeno.xtab <- ggplot(ps.ge.adeno.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.adeno.fishers <- ps.ge.adeno.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.adeno.fishers
+
+ggplot(ps.ge.adeno.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# Caliciviridae Analysis
+
+```{r Caliciviridae-genus}
+# Alignment analysis
+# Quick check for common genera
+ps.aln.enriched %>%
+  filter(Family == "Caliciviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  tally() %>%
+  arrange(-n)
+
+# Filter out low abundant genera
+ps.aln.enriched.calici <- ps.aln.enriched %>%
+  filter(Family == "Caliciviridae") %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(genus_count = n()) %>%
+  filter(genus_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.calici %>%
+  group_by(Genus) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+calici.genus.keep <- unique(ps.aln.enriched.calici$Genus)
+
+# Genus Count Analysis
+ps.ge.calici <- ps.ge %>%
+  filter(Genus %in% calici.genus.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.calici.dose.ge <- ggplot(ps.ge.calici, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE), nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+# Add summary reference point
+p.calici.dose.ge <- add_summary(data = ps.ge.calici, p.calici.dose.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.calici.dose.ge
+
+# Kruskal-wallis test
+ps.ge.calici %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.calici.dose.ge <- ps.ge.calici %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.calici.dose.ge
+
+# Quick summary of significance
+stat.test.calici.dose.ge %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Genus)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.calici.sero.ge <- ggplot(ps.ge.calici, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Genus, mean_genus, .desc = TRUE)~vaccination_proximity, ncol = 3) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.calici.sero.ge <- add_summary(data = ps.ge.calici, p.calici.sero.ge, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.calici.sero.ge
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.calici.sero.ge.DS1 <- ps.ge.calici %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.calici.sero.ge.DS1
+
+# Quick summary of significance
+stat.test.calici.sero.ge.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.calici.sero.ge.DS2 <- ps.ge.calici %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.calici.sero.ge.DS2
+
+# Quick summary of significance
+stat.test.calici.sero.ge.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.calici.sero.ge.DS3 <- ps.ge.calici %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Genus != "Kobuvirus") %>% # Remove zero count genera
+  filter(Genus != "Cardiovirus") %>% # Remove zero count genera
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance()
+stat.test.calici.sero.ge.DS3
+
+# Quick summary of significance
+stat.test.calici.sero.ge.DS3 %>%
+  filter(p.adj < 0.05)
+
+```
+
+```{r Caliciviridae-species}
+# Alignment analysis
+# Quick check for common taxa
+p.aln.calici.sp <- ps.aln.enriched %>%
+  filter(Family == "Caliciviridae") %>%
+  filter(Genus %in% calici.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n)
+
+ggplot(p.aln.calici.sp, aes(x = reorder(Species, -n), y = n)) +
+  geom_point() +
+  scale_y_log10() + 
+  coord_flip()
+
+# Filter out low abundant species
+ps.aln.enriched.calici.sp <- ps.aln.enriched %>%
+  filter(Family == "Caliciviridae") %>%
+  filter(Genus %in% calici.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(species_count = n()) %>%
+  filter(species_count > 100) %>%
+  droplevels()
+
+ps.aln.enriched.calici.sp %>%
+  group_by(Species) %>%
+  tally() %>%
+  distinct() %>%
+  arrange(-n)
+
+calici.species.keep <- unique(ps.aln.enriched.calici.sp$Species)
+
+# Genus Count Analysis
+ps.sp.calici <- ps.sp %>%
+  filter(Family == "Caliciviridae") %>%
+  filter(Genus %in% calici.genus.keep) %>%
+  filter(Species %in% calici.species.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  mutate(mean_species = mean(Abundance)) %>%
+  ungroup()
+
+# Per Dose plots
+p.calici.dose.sp <- ggplot(ps.sp.calici, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Genus)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE), ncol = 3) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  theme(panel.grid = element_blank()) +
+  labs(y = "Abundance (log10)", x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  scale_y_continuous(limits = c(-0.1, 6))
+
+# Add summary reference point
+p.calici.dose.sp <- add_summary(data = ps.sp.calici, p.calici.dose.sp, "mean_ci", color = "black", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.calici.dose.sp
+
+# Kruskal-wallis test
+ps.sp.calici %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Dunn's post test
+stat.test.calici.dose.sp <- ps.sp.calici %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.calici.dose.sp
+
+# Quick summary of significance
+stat.test.calici.dose.sp %>%
+  filter(p.adj < 0.05) %>%
+  arrange(Species)
+
+# The methods for directly adding p-values to ggplot are suboptimal, so adding these by hand using Keynote
+
+# Groupwise seroconversion plots and analysis
+p.calici.sero.sp <- ggplot(ps.sp.calici, aes(x = seroconversion, y = log10(scaled_abundance_median+1))) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.2) +
+  facet_wrap(facets = ~fct_reorder(Species, mean_species, .desc = TRUE)~vaccination_proximity, nrow = 7) +
+  labs(y = "Abundance (log10)", x ="")
+
+p.calici.sero.sp <- add_summary(data = ps.sp.calici, p.calici.sero.sp, "mean_sd", color = "red", size = 0.4) # Note: You should redraw the original plot to update these aesthetics
+p.calici.sero.sp
+
+# Calculate wilcoxon-test per dose
+# Dose 1
+stat.test.calici.sero.sp.DS1 <- ps.sp.calici %>%
+  filter(vaccination_proximity == "DS1") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p)
+stat.test.calici.sero.sp.DS1
+
+# Quick summary of significance
+stat.test.calici.sero.sp.DS1 %>%
+  filter(p.adj < 0.05)
+
+# Dose 2
+stat.test.calici.sero.sp.DS2 <- ps.sp.calici %>%
+  filter(vaccination_proximity == "DS2") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.calici.sero.sp.DS2
+
+# Quick summary of significance
+stat.test.calici.sero.sp.DS2 %>%
+  filter(p.adj < 0.05)
+
+# Dose 3
+stat.test.calici.sero.sp.DS3 <- ps.sp.calici %>%
+  filter(vaccination_proximity == "DS3") %>%
+  filter(Species != "unknown") %>%
+  filter(Genus != "Salivirus") %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Species) %>%
+  wilcox_test(log_scaled ~ seroconversion) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance()
+stat.test.calici.sero.sp.DS3
+
+# Quick summary of significance
+stat.test.calici.sero.sp.DS3 %>%
+  filter(p.adj < 0.05)
+
+# Heatmap
+ps.calici.species.mean <- ps.sp.calici %>%
+    filter(scaled_abundance_median > 0) %>%
+    group_by(Species, vaccination_proximity) %>%
+    summarise(species_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+p.calici.species.hm <- ggplot(ps.calici.species.mean, aes(x = vaccination_proximity, y = Species, fill = log2(species_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Caliciviridae Species", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10))
+p.calici.species.hm
+
+```
+```{r calici-fishers}
+# Genus level Fisher's exact testing
+# Create presence absence table for each sabin strain per sample per vaccination proximity
+ps.ge.calici.pa <- ps.ge.calici %>%
+  select(subjectID, vaccination_proximity, Genus, scaled_abundance_median, seroconversion) %>%
+  mutate(PA = ifelse(scaled_abundance_median > 0, 1, 0)) %>%
+  select(-scaled_abundance_median) %>%
+  arrange(subjectID, vaccination_proximity)
+
+ps.ge.calici.xtab <- ps.ge.calici.pa %>%
+  group_by(vaccination_proximity, Genus, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup()
+ps.ge.calici.xtab
+
+p.ge.calici.xtab <- ggplot(ps.ge.calici.xtab, aes(x = Genus, y = Percent, color = seroconversion)) +
+  geom_point() +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip()
+  
+ps.ge.calici.fishers <- ps.ge.calici.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(Genus) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm")
+ps.ge.calici.fishers
+
+ggplot(ps.ge.calici.fishers, aes(x = Genus, y = p.adj)) +
+  geom_point(size = 2) +
+  geom_point(aes(x = Genus, y = pvalue), shape = 21) +
+  geom_hline(yintercept = 0.05, lty = 2, color = "firebrick3") +
+  ylim(0,1)
+
+```
+# All enriched genera
+
+```{r viral-genera}
+viral.family.keep <- as.factor(c(
+  "Picornaviridae",
+  "Anelloviridae",
+  "Astroviridae",
+  "Reoviridae",
+  "Adenoviridae",
+  "Caliciviridae",
+  "Parvoviridae"
+))
+viral.family.keep
+
+viral.genera.keep <- as.factor(c(
+  "Enterovirus",
+  "Cosavirus",
+  "Parechovirus",
+  "Salivirus",
+  "Bocaparvovirus",
+  "Dependoparvovirus",
+  "Rotavirus",
+  "Mamastrovirus",
+  "Astroviridae",
+  "Betatorquevirus",
+  "Alphatorquevirus",
+  "Gammatorquevirus",
+  "Mastadenovirus",
+  "Norovirus",
+  "unknown"
+))
+viral.genera.keep
+
+# Genus Count Analysis
+ps.all.genera <- ps.ge %>%
+  filter(Family %in% viral.family.keep) %>%
+  filter(Genus %in% viral.genera.keep) %>%
+  droplevels() %>%
+  group_by(Genus) %>%
+  mutate(mean_genus = max(Abundance)) %>%
+  ungroup() %>%
+  group_by(Family) %>%
+  mutate(mean_family = max(Abundance)) %>%
+  ungroup()
+
+# Heatmap
+ps.all.genera.mean <- ps.all.genera %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Family, Genus, vaccination_proximity) %>%
+    summarise(genus_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+ps.all.genera.mean %>%
+  group_by(Family) %>%
+  tally() %>%
+  arrange(-n)
+
+ps.all.genera.mean$Family <- factor(ps.all.genera.mean$Family, levels = c("Picornaviridae",
+                                                                          "Anelloviridae",
+                                                                          "Astroviridae",
+                                                                          "Reoviridae",
+                                                                          "Adenoviridae",
+                                                                          "Caliciviridae",
+                                                                          "Parvoviridae"))
+
+# Per dose heatmap
+p.fam.dose.hm <- ggplot(ps.all.genera.mean, aes(x = vaccination_proximity, y = Genus, fill = log2(genus_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  labs(y = "Genus", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10)) +
+  facet_wrap(~Family, scales = "free_y", nrow = 7) +
+  theme(legend.position = "none")
+p.fam.dose.hm
+
+# Seroconversion heatmap
+ps.all.genera.mean.sero <- ps.all.genera %>%
+    filter(scaled_abundance_median > 1) %>%
+    group_by(Family, Genus, seroconversion, vaccination_proximity) %>%
+    summarise(genus_mean = mean(scaled_abundance_median), n = n()) %>%
+    arrange(-n)
+
+ps.all.genera.mean.sero$Family <- factor(ps.all.genera.mean.sero$Family, levels = c("Picornaviridae",
+                                                                          "Anelloviridae",
+                                                                          "Astroviridae",
+                                                                          "Reoviridae",
+                                                                          "Adenoviridae",
+                                                                          "Caliciviridae",
+                                                                          "Parvoviridae"))
+
+p.fam.sero.hm <- ggplot(ps.all.genera.mean.sero, aes(x = seroconversion, y = Genus, fill = log2(genus_mean))) +
+  geom_tile(aes(height = 1, width = 1)) +
+  theme(panel.grid = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.ticks = element_blank()) +
+  theme(axis.title.y = element_blank()) +
+  labs(y = "Genus", fill = "Avg. # of Reads \n(Log2)") +
+  scale_fill_gradient(low = "white", high = "firebrick3", breaks = c(2.5, 5.0, 7.5, 10)) +
+  facet_grid(Family~vaccination_proximity, scales = "free_y")
+p.fam.sero.hm
+
+# Combine plots
+cowplot::plot_grid(p.fam.dose.hm, p.fam.sero.hm,
+                   align = "hv", axis = "b",
+                   ncol = 2,
+                   rel_widths = c(0.3, 0.7))
+
+# All data point plots
+# Dose
+p.all.genera.dose <- ggplot(ps.all.genera, aes(x = vaccination_proximity, y = log10(scaled_abundance_median+1), color = Family)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(~Genus) +
+  labs(x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  scale_y_continuous(limits = c(-1.8, 5), expand = expansion(mult = c(0, 0.3))) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "bottom")
+
+# Add summary reference point
+p.all.genera.dose <- add_summary(data = p.all.genera.dose, p.all.genera, fun = "mean_sd", color = "black", size = 0.3) # Note: You should redraw the original plot to update these aesthetics
+p.all.genera.dose
+
+# Seroconversion
+p.all.genera.sero <- ggplot(ps.all.genera, aes(x = seroconversion, y = log10(scaled_abundance_median+1), color = Family)) +
+  geom_jitter(size = 1.5, width = 0.2, alpha = 0.4) +
+  facet_wrap(~Genus) +
+  labs(x ="") +
+  ylab(bquote("Abundance log"[10])) +
+  guides(colour = guide_legend(override.aes = list(alpha = 1, size = 2))) +
+  scale_y_continuous(limits = c(-1.8, 5), expand = expansion(mult = c(0, 0.3))) +
+  theme(panel.grid = element_blank()) +
+  theme(legend.position = "bottom")
+
+# Add summary reference point
+p.all.genera.sero <- add_summary(data = ps.all.genera, p.all.genera.sero, fun = "mean_sd", color = "black", size = 0.3) # Note: You should redraw the original plot to update these aesthetics
+p.all.genera.sero
+
+
+# Calculate kruskal-test per dose with FDR correction
+ps.all.genera %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  kruskal_test(log_scaled ~ vaccination_proximity) %>%
+  adjust_pvalue(method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+
+# Calculate Dunn's post test
+stat.test.all.dose.ge <- ps.all.genera %>%
+  mutate(log_scaled = log10(scaled_abundance_median)) %>%
+  mutate_if(is.numeric, function(x) ifelse(is.infinite(x), 0, x)) %>%
+  group_by(Genus) %>%
+  dunn_test(log_scaled ~ vaccination_proximity, p.adjust.method = "holm") %>%
+  add_significance() %>%
+  arrange(p.adj.signif)
+stat.test.all.dose.ge
+
+```
+
+```{r all-species}
+ggarrange(p.picorna.species.hm, p.parvo.species.hm, p.anello.species.hm, p.astro.species.hm, p.reo.species.hm, p.calici.species.hm, common.legend = TRUE, legend = "bottom")
+
+
+```
+
+#### Additional Analysis
+
+```{r picorna-species, eval=FALSE, include=FALSE}
+# Species Count Analysis
+# Quick check for common taxa
+p.picorna.species.check <- ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  arrange(-n) %>%
+  ggplot(aes(x = reorder(Species, n), y = n)) +
+  geom_point() +
+  scale_y_log10(labels = scales::scientific) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  geom_hline(yintercept = 1e1, lty = 2, col = "firebrick3") +
+  geom_hline(yintercept = 1e2, lty = 2, col = "steelblue") +
+  coord_flip() +
+  labs(y = "Count", x = "Species")
+p.picorna.species.check
+
+picorna.species.enriched <- ps.aln.enriched %>%
+  filter(Family == "Picornaviridae") %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  droplevels() %>%
+  group_by(Species) %>%
+  tally() %>%
+  filter(n > 1000) %>%
+  droplevels()
+
+picorna.species.keep <- unique(picorna.species.enriched$Species)
+
+# Filter low abundant species
+ps.sp.picorna <- ps.sp %>%
+  filter(Genus %in% picorna.genus.keep) %>%
+  filter(Species %in% picorna.species.keep) %>%
+  filter(Species != "unknown") %>%
+  filter(log10(Abundance) > 1) %>%
+  droplevels()
+
+ggplot(filter(ps.sp.picorna, vaccination_proximity == "DS3"), aes(x = sampleID, y = Species, fill = log10(scaled_abundance_median))) +
+  geom_tile() +
+  facet_grid(vaccination_proximity~Genus~seroconversion, scales = "free") +
+  theme(axis.text.x = element_blank()) +
+  theme(panel.grid = element_blank())
+
+
+df <- ps.sp.picorna %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(participant_id, OTU, Abundance) %>%
+  arrange(participant_id) %>%
+  pivot_wider(id_cols = participant_id,
+              names_from = OTU,
+              values_from = Abundance) %>%
+  column_to_rownames(var = "participant_id") %>%
+  replace(is.na(.), 0)
+as_tibble(df)
+rownames(df)
+
+library(vegan)
+example_NMDS <- metaMDS(df, k = 2)
+stressplot(example_NMDS)
+plot(example_NMDS)
+
+treat=c(rep("Treatment1",5),rep("Treatment2",5))
+
+
+ordiplot(example_NMDS,type="n")
+
+orditorp(example_NMDS,display="species",col="red",air=0.01)
+orditorp(example_NMDS,display="sites",cex=0.75,air=0.01)
+
+p.picorna.sp <- ggboxplot(ps.sp.picorna, x = "seroconversion", y = "scaled_abundance_median", outlier.shape = NA, width = 0.4) +
+  geom_jitter(size = 1, alpha = 0.7, width = 0.1, aes(color = Genus)) +
+  facet_grid(Species~vaccination_proximity) +
+  scale_y_log10(labels = scales::scientific) +
+  stat_compare_means(method = "wilcox.test",
+                     label = "p.signif",
+                     label.x = 2.3,
+                     label.y = 3,
+                     size = 8,
+                     color = "firebrick3",
+                     hide.ns = TRUE) +
+  theme(legend.position = "right") +
+  theme_bw(base_size = 10) +
+  theme(strip.text.y = element_text(size = 6)) +
+  labs(y = "Sacled Abundance", color = "Genus") +
+  guides(colour = guide_legend(override.aes = list(size=2, alpha = 1)))
+p.picorna.sp
+
+# Average abundance of each genus per dose
+ps.ge.picorna.ts <- ps.ge.picorna %>%
+  group_by(vaccination_proximity, Genus) %>%
+  summarise(mean.ts = mean(scaled_abundance_median)) %>%
+  arrange(Genus)
+
+p.ge.picorna.ts <- ggplot(ps.ge.picorna.ts, aes(x = vaccination_proximity, y = mean.ts, group = Genus, color = Genus)) +
+  geom_point(size = 1.5) +
+  geom_line(lwd = 0.2) +
+  scale_y_log10() +
+  labs(x = "Dose", y = "Avg. Scaled Abundance")
+
+# Average abundance of each Species per dose
+ps.sp.picorna.ts <- ps.sp.picorna %>%
+  group_by(vaccination_proximity, Genus, Species) %>%
+  summarise(mean.ts = mean(scaled_abundance_median)) %>%
+  arrange(Species)
+
+p.sp.picorna.ts <- ggplot(ps.sp.picorna.ts, aes(x = vaccination_proximity, y = mean.ts, group = Species, color = Species)) +
+  geom_point(size = 1.5) +
+  geom_line(lwd = 0.2) +
+  scale_y_log10() +
+  facet_grid(~Genus) +
+  labs(x = "Dose", y = "Avg. Scaled Abundance")
+  
+```
+
+```{r all-fisher}
+# Add Family to each
+updated.parvo.xtab <- ps.ge.parvo.xtab %>%
+  mutate(Family = "Parvoviridae")
+
+updated.reo.xtab <- ps.ge.reo.xtab %>%
+  mutate(Family = "Reoviridae")
+
+updated.astro.xtab <- ps.ge.astro.xtab %>%
+  mutate(Family = "Astroviride")
+
+updated.anello.xtab <- ps.ge.anello.xtab %>%
+  mutate(Family = "Anelloviridae")
+
+updated.adeno.xtab <- ps.ge.adeno.xtab %>%
+  mutate(Family = "Adenoviridae")
+
+updated.calici.xtab <- ps.ge.calici.xtab %>%
+  mutate(Family = "Caliciviridae")
+
+
+all.xtab <- bind_rows(updated.parvo.xtab, updated.reo.xtab, updated.astro.xtab, updated.anello.xtab, updated.adeno.xtab, updated.calici.xtab)
+
+all.xtab <- all.xtab %>%
+  replace(is.na(.), 0) %>%
+  filter(Genus != "unknown")
+
+p.all.fisher <- ggplot(all.xtab, aes(y = Genus, x = Percent, group = seroconversion, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_grid(~vaccination_proximity, scales = "free") +
+  labs(x = "% Positive Samples", fill = "Seroconversion")
+
+```
+
+```{r viral-richness-this-is-dumb}
+# Modify viral presence and absence tables for each family of interest
+## GENUS
+bound.pa.ge <- bind_rows(ps.ge.picorna.pa, ps.ge.parvo.pa, ps.ge.reo.pa, ps.ge.astro.pa, ps.ge.anello.pa, ps.ge.adeno.pa, ps.ge.calici.pa)
+
+all.ge.rich.ge <- bound.pa.ge %>%
+  group_by(subjectID, vaccination_proximity, seroconversion) %>%
+  mutate(number_taxa = sum(PA)) %>%
+  ungroup() %>%
+  select(subjectID, vaccination_proximity, seroconversion, number_taxa) %>%
+  distinct() %>%
+  group_by(vaccination_proximity, seroconversion) %>%
+  mutate(mean_taxa = mean(number_taxa)) %>%
+  ungroup()
+
+ggplot(all.ge.rich.ge, aes(x = vaccination_proximity, y = mean_taxa, fill=seroconversion))+
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", fill = "Seroconversion", y = "Avg. # of Eukaryotic Viral Genera Detected")
+
+all.ge.rich.ge %>%
+  group_by(vaccination_proximity) %>%
+  summarize(mean(mean_taxa))
+
+## Species
+bound.pa.sp <- bind_rows(ps.sp.picorna.pa, ps.sp.parvo.pa, ps.sp.reo.pa, ps.sp.astro.pa, ps.sp.anello.pa, ps.sp.adeno.pa, ps.sp.calici.pa)
+
+all.sp.rich.sp <- bound.pa.sp %>%
+  group_by(subjectID, vaccination_proximity, seroconversion) %>%
+  mutate(number_taxa = sum(PA)) %>%
+  ungroup() %>%
+  select(subjectID, vaccination_proximity, seroconversion, number_taxa) %>%
+  distinct() %>%
+  group_by(vaccination_proximity, seroconversion) %>%
+  mutate(mean_taxa = mean(number_taxa)) %>%
+  ungroup()
+
+ggplot(all.sp.rich.sp, aes(x = vaccination_proximity, y = mean_taxa, fill=seroconversion))+
+  spom_bar(stat = "identity", position = "dodsp") +
+  labs(x = "", fill = "Seroconversion", y = "Avg. # of Eukaryotic Viral spnera Detected")
+
+all.sp.rich.sp %>%
+  group_by(vaccination_proximity) %>%
+  summarize(mean(mean_taxa))
+
+
+```
+
+
+```{r }
+df.picorna <- ps.euk.species.stand %>%
+  as_tibble() %>%
+  filter(Family == "Picornaviridae") %>%
+  select(Sample, participant_id, vaccination_proximity, Genus, Species, scaled_abundance_median) %>%
+  separate(Sample, sep = "-", into = c("Run", "I_Number", "WU_Sample_ID"), remove = FALSE)
+df.picorna
+
+df.picorna.summary <- df.picorna %>%
+  group_by(participant_id, vaccination_proximity, Genus) %>%
+  summarize(mean_abundance = mean(scaled_abundance_median)) %>%
+  mutate(PA = ifelse(mean_abundance > 0, 1, 0)) %>%
+  arrange(-mean_abundance) %>%
+  ungroup()
+df.picorna.summary
+
+ df.picorna %>%
+   group_by(vaccination_proximity, Genus) %>%
+   summarize(mean_ab = mean(scaled_abundance_median)) %>%
+   ungroup() %>%
+   arrange(vaccination_proximity, -mean_ab)
+
+ggplot(filter(df.picorna.summary, Genus != "unknown"), aes(x = as.factor(participant_id), y = mean_abundance, group = Genus, color = vaccination_proximity)) +
+  geom_point(size = 2) +
+  geom_line(lty = 2, lwd = 0.5) +
+  facet_grid(vaccination_proximity~Genus) +
+  coord_flip() +
+  scale_y_log10() +
+  theme(axis.text.y = element_blank()) +
+  labs(x = "", y = "Mean Abundance Scaled to Library Size")
+
+ggplot(filter(df.picorna.summary, Genus != "unknown"), aes(x = as.factor(participant_id), y = mean_abundance+1, group = Genus, fill = vaccination_proximity)) +
+  geom_bar(stat = "identity") +
+  facet_grid(vaccination_proximity~Genus) +
+  coord_flip() +
+  scale_y_log10() +
+  theme(axis.text.y = element_blank()) +
+  labs(x = "", y = "Mean Abundance Scaled to Library Size")
+
+df.cosa.summary <- df.picorna.summary %>%
+  filter(Genus == "Cosavirus") %>%
+  droplevels() %>%
+  filter(mean_abundance > 0)
+
+ggplot(df.cosa.summary, aes(x = as.factor(participant_id), y = mean_abundance+1, group = Genus, fill = vaccination_proximity)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~vaccination_proximity, ncol = 1) +
+  scale_y_log10() +
+  labs(x = "", y = "Mean Abundance Scaled to Library Size (log10)") +
+  theme(legend.position = "null") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+ggplot(df.cosa.summary, aes(x = as.factor(participant_id), y = mean_abundance+1, group = Genus, fill = vaccination_proximity)) +
+  geom_bar(stat = "identity") +
+  scale_y_log10() +
+  labs(x = "", y = "Mean Abundance Scaled to Library Size (log10)") +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+```
+
+
+```{r}
+x <- c("897", "987", "1098")
+
+x <- df.cosa.summary$participant_id
+
+
+```
+
+```{r additional-IgA-DS1}
+# Picorna by IgA levels at DS1
+picorna.IgA <- ps.ge.picorna %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+ggplot(picorna.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+picorna.IgA.cor <- picorna.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+picorna.IgA.cor
+
+DS1.p.picorna <- picorna.IgA.cor$p_val
+DS1.padj.picorna <- as_tibble(p.adjust(DS1.p.picorna, method = "holm"))
+cbind(picorna.IgA.cor, DS1.padj.picorna)
+
+# Astro by IgA levels at DS1
+astro.IgA <- ps.ge.astro %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+ggplot(astro.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+astro.IgA.cor <- astro.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+astro.IgA.cor
+
+DS1.p.astro <- astro.IgA.cor$p_val
+DS1.padj.astro <- as_tibble(p.adjust(DS1.p.astro, method = "holm"))
+cbind(astro.IgA.cor, DS1.padj.astro)
+
+# Anello by IgA levels at DS1
+anello.IgA <- ps.ge.anello %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+ggplot(anello.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+anello.IgA.cor <- anello.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+anello.IgA.cor
+
+DS1.p.anello <- anello.IgA.cor$p_val
+DS1.padj.anello <- as_tibble(p.adjust(DS1.p.anello, method = "holm"))
+cbind(anello.IgA.cor, DS1.padj.anello)
+
+# Adeno by IgA levels at DS1
+adeno.IgA <- ps.ge.adeno %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+ggplot(adeno.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+adeno.IgA.cor <- adeno.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+adeno.IgA.cor
+
+DS1.p.adeno <- adeno.IgA.cor$p_val
+DS1.padj.adeno <- as_tibble(p.adjust(DS1.p.adeno, method = "holm"))
+cbind(adeno.IgA.cor, DS1.padj.adeno)
+
+# calici by IgA levels at DS1
+calici.IgA <- ps.ge.calici %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(-vaccination_proximity)
+
+ggplot(calici.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+calici.IgA.cor <- calici.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+calici.IgA.cor
+
+DS1.p.calici <- calici.IgA.cor$p_val
+DS1.padj.calici <- as_tibble(p.adjust(DS1.p.calici, method = "holm"))
+cbind(calici.IgA.cor, DS1.padj.calici)
+
+```
+
+```{r additional-IgA-DS2}
+# Picorna by IgA levels at DS2
+picorna.IgA <- ps.ge.picorna %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(-vaccination_proximity)
+
+ggplot(picorna.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+picorna.IgA.cor <- picorna.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+picorna.IgA.cor
+
+DS2.p.picorna <- picorna.IgA.cor$p_val
+DS2.padj.picorna <- as_tibble(p.adjust(DS2.p.picorna, method = "holm"))
+cbind(picorna.IgA.cor, DS2.padj.picorna)
+
+# Astro by IgA levels at DS2
+astro.IgA <- ps.ge.astro %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(-vaccination_proximity)
+
+ggplot(astro.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+astro.IgA.cor <- astro.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+astro.IgA.cor
+
+DS2.p.astro <- astro.IgA.cor$p_val
+DS2.padj.astro <- as_tibble(p.adjust(DS2.p.astro, method = "holm"))
+cbind(astro.IgA.cor, DS2.padj.astro)
+
+# Anello by IgA levels at DS2
+anello.IgA <- ps.ge.anello %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(-vaccination_proximity)
+
+ggplot(anello.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+anello.IgA.cor <- anello.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+anello.IgA.cor
+
+DS2.p.anello <- anello.IgA.cor$p_val
+DS2.padj.anello <- as_tibble(p.adjust(DS2.p.anello, method = "holm"))
+cbind(anello.IgA.cor, DS2.padj.anello)
+
+# Adeno by IgA levels at DS2
+adeno.IgA <- ps.ge.adeno %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(-vaccination_proximity)
+
+ggplot(adeno.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+adeno.IgA.cor <- adeno.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+adeno.IgA.cor
+
+DS2.p.adeno <- adeno.IgA.cor$p_val
+DS2.padj.adeno <- as_tibble(p.adjust(DS2.p.adeno, method = "holm"))
+cbind(adeno.IgA.cor, DS2.padj.adeno)
+
+# calici by IgA levels at DS2
+calici.IgA <- ps.ge.calici %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS2") %>%
+  select(-vaccination_proximity)
+
+ggplot(calici.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+calici.IgA.cor <- calici.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+calici.IgA.cor
+
+DS2.p.calici <- calici.IgA.cor$p_val
+DS2.padj.calici <- as_tibble(p.adjust(DS2.p.calici, method = "holm"))
+cbind(calici.IgA.cor, DS2.padj.calici)
+
+```
+
+
+```{r additional-IgA-DS3}
+# Picorna by IgA levels at DS3
+picorna.IgA <- ps.ge.picorna %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(-vaccination_proximity)
+
+ggplot(picorna.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+picorna.IgA.cor <- picorna.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+picorna.IgA.cor
+
+DS3.p.picorna <- picorna.IgA.cor$p_val
+DS3.padj.picorna <- as_tibble(p.adjust(DS3.p.picorna, method = "holm"))
+cbind(picorna.IgA.cor, DS3.padj.picorna)
+
+# Astro by IgA levels at DS3
+astro.IgA <- ps.ge.astro %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(-vaccination_proximity)
+
+ggplot(astro.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+astro.IgA.cor <- astro.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+astro.IgA.cor
+
+DS3.p.astro <- astro.IgA.cor$p_val
+DS3.padj.astro <- as_tibble(p.adjust(DS3.p.astro, method = "holm"))
+cbind(astro.IgA.cor, DS3.padj.astro)
+
+# Anello by IgA levels at DS3
+anello.IgA <- ps.ge.anello %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(-vaccination_proximity)
+
+ggplot(anello.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+anello.IgA.cor <- anello.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+anello.IgA.cor
+
+DS3.p.anello <- anello.IgA.cor$p_val
+DS3.padj.anello <- as_tibble(p.adjust(DS3.p.anello, method = "holm"))
+cbind(anello.IgA.cor, DS3.padj.anello)
+
+# Adeno by IgA levels at DS3
+adeno.IgA <- ps.ge.adeno %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(-vaccination_proximity)
+
+ggplot(adeno.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+adeno.IgA.cor <- adeno.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+adeno.IgA.cor
+
+DS3.p.adeno <- adeno.IgA.cor$p_val
+DS3.padj.adeno <- as_tibble(p.adjust(DS3.p.adeno, method = "holm"))
+cbind(adeno.IgA.cor, DS3.padj.adeno)
+
+# calici by IgA levels at DS3
+calici.IgA <- ps.ge.calici %>%
+  select(subjectID, vaccination_proximity, Genus, postvaccination_IgA_titer, scaled_abundance_median, seroconversion) %>%
+  filter(vaccination_proximity == "DS3") %>%
+  select(-vaccination_proximity)
+
+ggplot(calici.IgA, aes(x = log10(postvaccination_IgA_titer), y = log10(scaled_abundance_median))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm") +
+  facet_wrap(~Genus, ncol = 1)
+
+# Multiple correlation test
+calici.IgA.cor <- calici.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+calici.IgA.cor
+
+DS3.p.calici <- calici.IgA.cor$p_val
+DS3.padj.calici <- as_tibble(p.adjust(DS3.p.calici, method = "holm"))
+cbind(calici.IgA.cor, DS3.padj.calici)
+
+```
+
+```{r picorna-vs-parvo}
+df.1 <- ps.ge.picorna %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(Sample, Family, scaled_abundance_median) %>%
+  #pivot_wider(names_from = Family, values_from = scaled_abundance_median)
+  rename(Picornaviridae = scaled_abundance_median) %>%
+  select(-Family)
+
+df.2 <- ps.ge.parvo %>%
+  filter(vaccination_proximity == "DS1") %>%
+  select(Sample, Family, scaled_abundance_median) %>%
+  #pivot_wider(names_from = Family, values_from = scaled_abundance_median)
+  rename(Parvoviridae = scaled_abundance_median) %>%
+  select(-Family)
+
+df.3 <- inner_join(df.1, df.2, by = "Sample")
+
+ggplot(df.3, aes(x = log10(Picornaviridae), y = log10(Parvoviridae))) +
+  geom_point(size = 1) +
+  geom_smooth(method = "lm")
+
+cor.test(df.3$Picornaviridae, df.3$Parvoviridae, method = "pearson")
+
+calici.IgA %>%
+  group_by(Genus) %>%
+  summarize(cor_coef=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$estimate, p_val=cor.test(postvaccination_IgA_titer, scaled_abundance_median, method="pearson")$p.value) %>%
+  arrange(p_val)
+
+```
+
+```{r}
+p.parvo.IgA
+
+ggarrange(p.fam.IgA, p.parvo.IgA, widths = c(0.8, 0.2))
+
+```
+
+```{r }
+ggplot(filter(bound.pa.ge, Genus != "unknown"), aes(x = vaccination_proximity, y = subjectID, fill = as.factor(PA))) +
+  geom_tile() +
+  facet_grid(~Genus, scales = "free") +
+  #theme(axis.text.x = element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(axis.text.y = element_blank()) +
+  scale_fill_manual(values = c("steelblue", "firebrick3")) +
+  labs(fill = "Presence / Absence", x = "Dose", y = "Subject")
+
+# Filter on samples that only have 3 samples
+bound.pa.ge.filt <- bound.pa.ge %>%
+  group_by(subjectID) %>%
+  mutate(Count = n()) %>%
+  arrange(subjectID, Count) %>%
+  filter(Count == 45)
+bound.pa.ge.filt
+
+ggplot(filter(bound.pa.ge.filt, Genus != "unknown"), aes(x = vaccination_proximity, y = subjectID, fill = as.factor(PA))) +
+  geom_tile() +
+  facet_grid(~Genus) +
+  #theme(axis.text.x = element_blank()) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(axis.text.y = element_blank()) +
+  scale_fill_manual(values = c("steelblue", "firebrick3")) +
+  labs(fill = "Presence / Absence", x = "Dose", y = "Subject")
+
+```
