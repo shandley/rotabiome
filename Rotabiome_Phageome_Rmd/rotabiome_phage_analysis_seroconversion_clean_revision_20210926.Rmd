@@ -1,0 +1,1304 @@
+---
+title: "Enteric virome constrains oral rotavirus vaccine immunogenicity in longitudinally-sampled cohort of Ghanaian infants"
+author: "Andrew HyoungJin Kim, George Armah, Francis Dennis, Leran Wang, Rachel Rodgers, Lindsay Droit, Megan T. Baldridge, Scott A. Handley, Vanessa C. Harris"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(data.table)
+library(phyloseq)
+library(rstatix)
+library(vegan)
+library(ggpubr)
+library(phylosmith)
+library("DAtest"); packageVersion("DAtest")
+
+
+
+theme_set(theme_bw())
+
+```
+### THE FOLLOWING CHUNK DOES NOT NEED TO BE RUN
+### CAN JUST READ IN THE RDS
+
+```{r import}
+# Read in count table
+counts <- column_to_rownames(read_tsv(file.choose()), var = "contig")
+
+# Read in CAT taxonomy table
+tax.tbl <- fread(file.choose(), header = TRUE, stringsAsFactors = TRUE, fill = TRUE)
+
+tax.tbl.m <- tax.tbl %>%
+  column_to_rownames(var = "contig") %>%
+  as.matrix()
+
+# Read in sample data
+MAP <- import_qiime_sample_data(file.choose())
+sample_names(MAP)
+
+# Create PhyloSeq object
+OTU <- otu_table(counts, taxa_are_rows = TRUE)
+TAX <- tax_table(tax.tbl.m)
+ps0 = phyloseq(OTU, TAX, MAP)
+ps0
+
+rank_names(ps0)
+get_taxa_unique(ps0, "order")
+
+# saveRDS(ps0, file = "./phage_ps0.RDS")
+
+```
+
+```{r read-rds}
+# df <- readRDS("./phage_ps0.RDS")
+
+```
+
+```{r factor-adjustments}
+# Convert factors into numeric
+sample_data(ps0)$age_stool_collection <- as.numeric(as.character(sample_data(ps0)$age_stool_collection))
+
+sample_data(ps0)$days_pre_or_post_vaccination <- as.numeric(as.character(sample_data(ps0)$days_pre_or_post_vaccination))
+
+sample_data(ps0)$age_at_first_vac <- as.numeric(as.character(sample_data(ps0)$age_at_first_vac))
+
+sample_data(ps0)$age_at_final_vac <- as.numeric(as.character(sample_data(ps0)$age_at_final_vac))
+
+sample_data(ps0)$age_at_blood_draw <- as.numeric(as.character(sample_data(ps0)$age_at_blood_draw))
+
+sample_data(ps0)$days_between_last_vaccination_and_blood_draw <- as.numeric(as.character(sample_data(ps0)$days_between_last_vaccination_and_blood_draw))
+
+sample_data(ps0)$height_cm <- as.numeric(as.character(sample_data(ps0)$height_cm))
+
+sample_data(ps0)$weight_kg <- as.numeric(as.character(sample_data(ps0)$weight_kg))
+
+sample_data(ps0)$postvaccination_IgA_titer <- as.numeric(as.character(sample_data(ps0)$postvaccination_IgA_titer))
+
+sample_data(ps0)$seroconversion <- as.factor(sample_data(ps0)$seroconversion)
+
+```
+
+# Average OTU counts per subject within dose
+
+```{r average-ASV-per-subject-per-dose}
+##### Normalization #######
+
+# Scales reads by 
+# 1) taking proportions,
+# 2) multiplying by a given library size of n
+# 3) rounding down
+scale_reads <- function(physeq, n) {
+  physeq.scale <-
+    transform_sample_counts(physeq, function(x) {
+      (n * x/sum(x))
+    })
+  otu_table(physeq.scale) <- floor(otu_table(physeq.scale))
+  physeq.scale <- prune_taxa(taxa_sums(physeq.scale) > 0, physeq.scale)
+  return(physeq.scale)
+}
+
+```
+
+## Community composition overviews
+```{r assign color to each family}
+
+Familycolor<-c("Ackermannviridae"="#c51b7d","Herelleviridae"= "#e9a3c9", "Myoviridae"= "#fde0ef", "not classified"="#e6f5d0", "Podoviridae"="#a1d76a", "Siphoviridae"="#4d9221")
+
+```
+
+# gut bacterial composition difference in pre- vs. post-vaccination 
+
+```{r pre- vs. post-vaccionation samples @ Dose 1}
+# # samples with pre & post
+# subjectID
+# s47
+# s110
+# s116
+# s149
+# s182
+# s238
+# s442
+# s53
+# s131
+# s248
+# s100
+# s102
+# s59
+# s441
+# s372
+
+prepost_ps <- scale_reads(ps0, 1e2)
+
+levels(sample_data(prepost_ps)$vaccination_proximity)
+prepost_ps_DS1 <- subset_samples(prepost_ps, vaccination_proximity == "DS1")
+levels(sample_data(prepost_ps_DS1)$vaccination_proximity)
+
+prepost_ps_DS1 <- subset_samples(prepost_ps_DS1, subjectID == "s47" | subjectID == "s110" | subjectID == "s116" | subjectID == "s149" | subjectID == "s182" | subjectID == "s238" | subjectID == "s442" | subjectID == "s53" | subjectID == "s131" | subjectID == "s248" | subjectID == "s100" | subjectID == "s102" | subjectID == "s59" | subjectID == "s441" | subjectID == "372")
+
+prepost_ps_DS1 <- subset_samples(prepost_ps_DS1, stool_number == "1" | stool_number == "2")
+prepost_ps_DS1 <- subset_taxa(prepost_ps_DS1, superkingdom == "Phage")
+
+# Calculate relative abundance
+threshold = 0.01
+
+prepost_ps_DS1_Family <- prepost_ps_DS1 %>%
+  tax_glom(taxrank = "family") %>%                     # agglomerate at class level
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% # Transform to rel. abundance
+  psmelt() %>%                                         # Melt to long format
+  filter(Abundance > threshold) %>%                    # Filter out low abundance taxa
+  arrange(family, Abundance)                           # Sort data frame alphabetically by phylum
+
+# plot relative abundance between pre- & post-vaccination samples @ Dose 1
+prepost_family_RA <- ggplot(prepost_ps_DS1_Family, aes(x = as.factor(subjectID), y = Abundance, fill = family)) + theme_bw() +
+  geom_bar(stat = "identity", width = 0.85, position="fill") +
+  facet_wrap(seroconversion~pre_post, scales = "free_x", nrow=1)+
+  labs(title= "", y = "Relative abundance", x = "") +
+  theme(legend.position = "bottom",  panel.grid = element_blank()) +
+  theme(plot.title = element_text(hjust=0, angle = 0, family= "Arial", size = 12, face="bold"), axis.text = element_text(angle = 90, family= "Arial", size = 12), plot.margin=unit(c(0,0,0,0), "cm"))+
+  scale_fill_manual(values = Familycolor)
+prepost_family_RA
+
+# plot relative abundance boxplot of each phyla
+prepost_phylum_RA_box <- ggboxplot(prepost_ps_DS1_Family, x = "pre_post", y = "Abundance", outlier.shape = NA, add = "jitter", color = "pre_post") +
+  facet_wrap(seroconversion~family, nrow = 1) +
+  stat_compare_means(label = "p.signif", label.x= 2.0, label.y=1.1) +
+  ylim(0,1.2) +
+  labs(x="", y = "Dose 1\n")+
+  theme(plot.title = element_text(hjust=0), axis.text = element_text(angle = 0, family= "Arial", size = 10))+
+  theme(panel.grid.major = element_line(), panel.grid.minor = element_line())
+prepost_phylum_RA_box
+
+# run statistical test
+prepost_wilcox <- prepost_ps_DS1_Family %>%
+group_by(family) %>%
+wilcox_test(formula = Abundance~pre_post)
+prepost_wilcox
+
+prepost_alpha <- read.delim("phage_prepost_alpha_merged.txt")
+
+levels(prepost_alpha$pre_post)
+prepost_alpha$pre_post <- factor(prepost_alpha$pre_post, levels = c("pre", "post"))
+levels(prepost_alpha$pre_post)
+
+# paired alpha diversity plots
+
+prepost_rich_paired <- ggpaired(data = prepost_alpha, x = "pre_post", y = "Observed", id = "id", color = "pre_post", point.size = 2.5,line.color = "gray", line.size = 0.4)+ stat_compare_means(method = "wilcox.test", hide.ns = FALSE, label = "p.format", label.x= 2.0, label.y=10) +
+  labs(title= "Richness", x= "", y = "") +
+   theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "none", axis.text = element_text(angle = 0, family= "Arial", size = 10), plot.margin=unit(c(0.2,0,-0.5,0), "cm"))+
+  ylim(0,10)
+  
+prepost_shannon_paired <- ggpaired(data = prepost_alpha, x = "pre_post", y = "Shannon", id = "id", color = "pre_post", point.size = 2.5,line.color = "gray", line.size = 0.4)+ stat_compare_means(method = "wilcox.test", hide.ns = FALSE, label = "p.format", label.x= 2.0, label.y=5) +
+  labs(title= "Shannon", x= "", y = "") +
+   theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "none", axis.text = element_text(angle = 0, family= "Arial", size = 10), plot.margin=unit(c(0.2,0,-0.5,0), "cm"))+
+  ylim(0,5)
+
+prepost_alpha_fig <- ggarrange(prepost_rich_paired, prepost_shannon_paired, ncol=2 )
+
+# beta diversity
+
+ord.psm.prepost.wuni <- ordinate(prepost_ps_DS1, method = "PCoA", distance = "wunifrac")
+evals.wuni.prepost <- ord.psm.prepost.wuni$values$Eigenvalues #Update
+
+# PCoA plots
+p.ord.wuni.prepost <- plot_ordination(prepost_ps_DS1, ord.psm.prepost.wuni, color = "pre_post") +
+labs(title= "", color = "pre_post")+
+   theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "bottom", axis.text = element_text(angle = 0, family= "Arial", size = 10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+    geom_hline(yintercept = 0, alpha = 0.5, linetype = 2) +
+   geom_vline(xintercept = 0, alpha = 0.5, linetype = 2)
+p.ord.wuni.prepost
+
+# run adonis
+
+pruned.prepost <- prune_taxa(taxa_sums(prepost_ps_DS1) > 0, prepost_ps_DS1)
+pruned.prepost <- prune_samples(sample_sums(pruned.prepost) > 0, prepost_ps_DS1)
+
+sd.prepost <- data.frame(sample_data(pruned.prepost))
+
+# Adonis test
+ds1.bray <- phyloseq::distance(pruned.prepost, method = "wunifrac")
+vegan::adonis2(ds1.bray ~ pre_post, data = sd.prepost)
+
+```
+
+```{r merge}
+###### Merge functions ############
+
+#Merge samples by averaging OTU countsinstead of summing
+merge_samples_mean <- function(physeq, group){
+  # Calculate the number of samples in each group
+  group_sums <- as.matrix(table(sample_data(physeq)[ ,group]))[,1]
+  
+  # Merge samples by summing
+  merged <- merge_samples(physeq, group)
+  
+  # Divide summed OTU counts by number of samples in each group to get mean
+  # Calculation is done while taxa are columns
+  x <- as.matrix(otu_table(merged))
+  if(taxa_are_rows(merged)){ x<-t(x) }
+  out <- floor(t(x/group_sums))
+  
+  # Return new phyloseq object with
+  
+  out <- otu_table(out, taxa_are_rows = TRUE)
+  otu_table(merged) <- out
+  return(merged)
+}
+
+# Scale Reads
+ps3 <- scale_reads(ps0, 1e2)
+
+# Subest by dose
+ps3.DS1 <- subset_samples(ps3, vaccination_proximity == "DS1")
+summary(taxa_sums(ps3.DS1))
+ps3.DS1 <- prune_taxa(taxa_sums(ps3.DS1)>0, ps3.DS1)
+summary(taxa_sums(ps3.DS1))
+
+ps3.DS2 <- subset_samples(ps3, vaccination_proximity == "DS2")
+summary(taxa_sums(ps3.DS2))
+ps3.DS2 <- prune_taxa(taxa_sums(ps3.DS2)>0, ps3.DS2)
+summary(taxa_sums(ps3.DS2))
+
+ps3.DS3 <- subset_samples(ps3, vaccination_proximity == "DS3")
+summary(taxa_sums(ps3.DS3))
+ps3.DS3 <- prune_taxa(taxa_sums(ps3.DS3)>0, ps3.DS3)
+summary(taxa_sums(ps3.DS3))
+
+# Count number of subjects
+length(unique(sample_data(ps3)$subjectID))
+length(unique(sample_data(ps3.DS1)$subjectID))
+length(unique(sample_data(ps3.DS2)$subjectID))
+length(unique(sample_data(ps3.DS3)$subjectID))
+
+# Transform all variables to factors just in case...
+df <- as.data.frame(lapply(sample_data(ps3),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df) <- sample_names(ps3)
+sample_data(ps3) <- sample_data(df)
+
+df_DS1 <- as.data.frame(lapply(sample_data(ps3.DS1),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df_DS1) <- sample_names(ps3.DS1)
+sample_data(ps3.DS1) <- sample_data(df_DS1)
+
+df_DS2 <- as.data.frame(lapply(sample_data(ps3.DS2),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df_DS2) <- sample_names(ps3.DS2)
+sample_data(ps3.DS2) <- sample_data(df_DS2)
+
+df_DS3 <- as.data.frame(lapply(sample_data(ps3.DS3),function (y) if(class(y)!="factor" ) as.factor(y) else y),stringsAsFactors=T)
+row.names(df_DS3) <- sample_names(ps3.DS3)
+sample_data(ps3.DS3) <- sample_data(df_DS3)
+
+# Merge samples on subjectID
+psm <- merge_samples_mean(ps3, "subjectID")
+nsamples(psm)
+length(unique(sample_data(ps3)$subjectID))
+
+psm.DS1 <- merge_samples_mean(ps3.DS1, "subjectID")
+nsamples(psm.DS1)
+length(unique(sample_data(ps3.DS1)$subjectID))
+
+psm.DS2 <- merge_samples_mean(ps3.DS2, "subjectID")
+nsamples(psm.DS2)
+length(unique(sample_data(ps3.DS2)$subjectID))
+
+psm.DS3 <- merge_samples_mean(ps3.DS3, "subjectID")
+nsamples(psm.DS3)
+length(unique(sample_data(ps3.DS3)$subjectID))
+
+# 'fix' subject ids by renaming merged subjectID with rownames
+# 'fix' seroconversion
+sample_data(psm.DS1)$subjectID
+sample_data(psm.DS1)$subjectID <- rownames(sample_data(psm.DS1))
+sample_data(psm.DS1)$subjectID
+
+sample_data(psm.DS1)$seroconversion
+sample_data(psm.DS1)$seroconversion <- factor(sample_data(psm.DS1)$seroconversion, labels = c("No", "Yes"))
+sample_data(psm.DS1)$seroconversion
+
+sample_data(psm.DS1)$vaccination_proximity
+sample_data(psm.DS1)$vaccination_proximity <- "DS1"
+sample_data(psm.DS1)$vaccination_proximity
+
+sample_data(psm.DS2)$subjectID
+sample_data(psm.DS2)$subjectID <- rownames(sample_data(psm.DS2))
+sample_data(psm.DS2)$seroconversion
+sample_data(psm.DS2)$seroconversion <- factor(sample_data(psm.DS2)$seroconversion, labels = c("No", "Yes"))
+sample_data(psm.DS2)$vaccination_proximity
+sample_data(psm.DS2)$vaccination_proximity <- "DS2"
+sample_data(psm.DS2)$subjectID
+sample_data(psm.DS2)$seroconversion
+sample_data(psm.DS2)$vaccination_proximity
+
+sample_data(psm.DS3)$subjectID
+sample_data(psm.DS3)$subjectID <- rownames(sample_data(psm.DS3))
+sample_data(psm.DS3)$seroconversion
+sample_data(psm.DS3)$seroconversion <- factor(sample_data(psm.DS3)$seroconversion, labels = c("No", "Yes"))
+sample_data(psm.DS3)$vaccination_proximity
+sample_data(psm.DS3)$vaccination_proximity <- "DS3"
+sample_data(psm.DS3)$subjectID
+sample_data(psm.DS3)$seroconversion
+sample_data(psm.DS3)$vaccination_proximity
+
+```
+
+```{r DS1-composition}
+###### All phage
+# Subset phage
+psm.DS1.phage <- subset_taxa(psm.DS1, superkingdom == "Phage")
+
+# Set minimal abundance plotting threshold
+threshold = 0.01
+
+# Glom at specific taxonomic depth and melt
+psm.DS1.phage.m <- psm.DS1.phage %>%
+  tax_glom(taxrank = "order") %>%                     
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% 
+  psmelt() %>%                                         
+  arrange(order, Abundance)
+
+# Bar plot
+p.DS1.order <- ggplot(psm.DS1.phage.m, aes(x = as.factor(subjectID), y = Abundance, fill = order)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 0.9) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Order")
+
+######Just Caudovirales
+psm.DS1.caudo <- subset_taxa(psm.DS1, order == "Caudovirales")
+
+psm.DS1.caudo.m <- psm.DS1.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  filter(Abundance > threshold) %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.DS1.caudo <- ggplot(psm.DS1.caudo.m, aes(x = as.factor(seroconversion), y = Abundance, fill = family)) + theme_bw() +
+  geom_bar(stat = "identity", width = 0.85, position="fill") +
+  facet_grid(~vaccination_proximity, scales = "free", space = "free") +
+  labs(title= "", y = "Relative abundance", x = "") +
+  theme(legend.position = "",  panel.grid = element_blank()) +
+  theme(plot.title = element_text(hjust=0, angle = 0, family= "Arial", size = 12, face="bold"), axis.text = element_text(angle = 0, family= "Arial", size = 12), plot.margin=unit(c(0,0,0,0), "cm"))+
+  scale_fill_manual(values = Familycolor)
+
+p.DS1.caudo.facet <- ggplot(psm.DS1.caudo.m, aes(x = as.factor(subjectID), y = Abundance, fill = family)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 1) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Family")
+
+
+# Statistical analysis
+# Need to do on unfiltered (no threshold) data
+psm.DS1.caudo.m.unfilt <- psm.DS1.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.ds1.family.box <- ggplot(psm.DS1.caudo.m.unfilt, aes(x = seroconversion, y = Abundance, color=seroconversion)) +
+  geom_jitter(width = 0.15, alpha = 0.7, height = 0.01) +
+  facet_wrap(~family, ncol = 4) +
+  labs(x = "", y = "Relative Abundance")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+psm.DS1.caudo.m.unfilt %>%
+  group_by(family) %>%
+  kruskal_test(Abundance ~ seroconversion)
+         
+```
+
+```{r ds1-fishers}
+# Genus level Fisher's exact testing
+ds1.pa <- psm.DS1.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(subjectID, vaccination_proximity, family, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 0, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ds1.pa.xtab <- ds1.pa %>%
+  group_by(vaccination_proximity, family, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ds1.pa.xtab
+
+# Prepare contingency table
+p.ds1.pa.xtab <- ggplot(ds1.pa.xtab, aes(x = family, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive", x = "")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  theme(legend.position="none")+
+  ylim(0,100)
+
+
+ds1.fish <- ds1.pa.xtab %>%
+  filter(vaccination_proximity == "DS1") %>%
+  group_by(family) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ds1.fish
+
+ggplot(ds1.fish, aes(x = p.adj, y = family)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0.05, lty = 2) +
+  labs(x = "Adjusted p-value", y = "Caudovirales Family")
+
+```
+
+```{r DS2-composition}
+###### All phage
+# Subset phage
+psm.DS2.phage <- subset_taxa(psm.DS2, superkingdom == "Phage")
+
+# Set minimal abundance plotting threshold
+threshold = 0.01
+
+# Glom at specific taxonomic depth and melt
+psm.DS2.phage.m <- psm.DS2.phage %>%
+  tax_glom(taxrank = "order") %>%                     
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% 
+  psmelt() %>%                                         
+  arrange(order, Abundance)
+
+# Bar plot
+p.DS2.order <- ggplot(psm.DS2.phage.m, aes(x = as.factor(subjectID), y = Abundance, fill = order)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 0.9) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Order")
+
+######Just Caudovirales
+psm.DS2.caudo <- subset_taxa(psm.DS2, order == "Caudovirales")
+
+psm.DS2.caudo.m <- psm.DS2.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  filter(Abundance > threshold) %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.DS2.caudo <- ggplot(psm.DS2.caudo.m, aes(x = as.factor(seroconversion), y = Abundance, fill = family)) + theme_bw() +
+  geom_bar(stat = "identity", width = 0.85, position="fill") +
+  facet_grid(~vaccination_proximity, scales = "free", space = "free") +
+  labs(title= "", y = "", x = "seroconversion") +
+  theme(legend.position = "",  panel.grid = element_blank()) +
+  theme(plot.title = element_text(hjust=0, angle = 0, family= "Arial", size = 12, face="bold"), axis.text = element_text(angle = 0, family= "Arial", size = 12), plot.margin=unit(c(0,0,0,0), "cm"), axis.text.y = element_blank(), axis.ticks.y = element_blank())+
+  scale_fill_manual(values = Familycolor)
+
+p.DS2.caudo.facet <- ggplot(psm.DS2.caudo.m, aes(x = as.factor(subjectID), y = Abundance, fill = family)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 1) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Family")
+
+p.DS2.caudo.hm <- ggplot(psm.DS2.caudo.m, aes(x = subjectID, y = family, fill = Abundance)) +
+  geom_tile() +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme(axis.text.x = element_blank()) +
+  labs(fill = "Relative\nAbundance", x = "", y = "Family")
+
+# Statistical analysis
+# Need to do on unfiltered (no threshold) data
+psm.DS2.caudo.m.unfilt <- psm.DS2.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.ds2.family.box <- ggplot(psm.DS2.caudo.m.unfilt, aes(x = seroconversion, y = Abundance, color=seroconversion)) +
+  geom_jitter(width = 0.15, alpha = 0.7, height = 0.01) +
+  facet_wrap(~family, ncol = 4) +
+  labs(x = "", y = "Relative Abundance")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+psm.DS2.caudo.m.unfilt %>%
+  group_by(family) %>%
+  kruskal_test(Abundance ~ seroconversion)
+         
+```
+
+```{r ds2-fishers}
+# Genus level Fisher's exact testing
+ds2.pa <- psm.DS2.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(subjectID, vaccination_proximity, family, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 0, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ds2.pa.xtab <- ds2.pa %>%
+  group_by(vaccination_proximity, family, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ds2.pa.xtab
+
+# Prepare contingency table
+p.ds2.pa.xtab <- ggplot(ds2.pa.xtab, aes(x = family, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive", x = "")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  theme(legend.position="none")+
+  ylim(0,100)
+
+
+ds2.fish <- ds2.pa.xtab %>%
+  filter(vaccination_proximity == "DS2") %>%
+  group_by(family) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ds2.fish
+
+ggplot(ds2.fish, aes(x = p.adj, y = family)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0.05, lty = 2) +
+  labs(x = "Adjusted p-value", y = "Caudovirales Family")
+
+```
+
+```{r DS3-composition}
+###### All phage
+# Subset phage
+psm.DS3.phage <- subset_taxa(psm.DS3, superkingdom == "Phage")
+
+# Set minimal abundance plotting threshold
+threshold = 0.01
+
+# Glom at specific taxonomic depth and melt
+psm.DS3.phage.m <- psm.DS3.phage %>%
+  tax_glom(taxrank = "order") %>%                     
+  transform_sample_counts(function(x) {x/sum(x)} ) %>% 
+  psmelt() %>%                                         
+  arrange(order, Abundance)
+
+# Bar plot
+p.DS3.order <- ggplot(psm.DS3.phage.m, aes(x = as.factor(subjectID), y = Abundance, fill = order)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 0.9) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Order")
+
+######Just Caudovirales
+psm.DS3.caudo <- subset_taxa(psm.DS3, order == "Caudovirales")
+
+psm.DS3.caudo.m <- psm.DS3.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  filter(Abundance > threshold) %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.DS3.caudo <- ggplot(psm.DS3.caudo.m, aes(x = as.factor(seroconversion), y = Abundance, fill = family)) + theme_bw() +
+  geom_bar(stat = "identity", width = 0.85, position="fill") +
+  facet_grid(~vaccination_proximity, scales = "free", space = "free") +
+  labs(title= "", y = "", x = "") +
+  theme(legend.position = "",  panel.grid = element_blank()) +
+  theme(plot.title = element_text(hjust=0, angle = 0, family= "Arial", size = 12, face="bold"), axis.text = element_text(angle = 0, family= "Arial", size = 12), plot.margin=unit(c(0,0,0,0), "cm"), axis.text.y = element_blank(), axis.ticks.y = element_blank())+
+  scale_fill_manual(values = Familycolor)
+
+p.DS3.caudo.facet <- ggplot(psm.DS3.caudo.m, aes(x = as.factor(subjectID), y = Abundance, fill = family)) +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme_bw() +
+  geom_bar(stat = "identity", width = 1) +
+  theme(axis.text.x = element_blank()) +
+  labs(x = "", y = "Relative Abundance", fill = "Family")
+
+p.DS3.caudo.hm <- ggplot(psm.DS3.caudo.m, aes(x = subjectID, y = family, fill = Abundance)) +
+  geom_tile() +
+  facet_wrap(~seroconversion, scales = "free_x") +
+  theme(axis.text.x = element_blank()) +
+  labs(fill = "Relative\nAbundance", x = "", y = "Family")
+
+# Statistical analysis
+# Need to do on unfiltered (no threshold) data
+psm.DS3.caudo.m.unfilt <- psm.DS3.caudo %>%
+  tax_glom(taxrank = "family") %>%
+  transform_sample_counts(function(x) {x/sum(x)} ) %>%
+  psmelt() %>%
+  arrange(family, Abundance) %>%
+  filter(family != "Herelleviridae") %>%
+  filter(family != "not classified")
+
+p.ds3.family.box <- ggplot(psm.DS3.caudo.m.unfilt, aes(x = seroconversion, y = Abundance, color=seroconversion)) +
+  geom_jitter(width = 0.15, alpha = 0.7, height = 0.01) +
+  facet_wrap(~family, ncol = 4) +
+  labs(x = "Seroconversion", y = "Relative Abundance")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())
+
+psm.DS3.caudo.m.unfilt %>%
+  group_by(family) %>%
+  kruskal_test(Abundance ~ seroconversion)
+         
+```
+
+```{r ds3-fishers}
+# Genus level Fisher's exact testing
+ds3.pa <- psm.DS3.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(subjectID, vaccination_proximity, family, Abundance, seroconversion) %>%
+  mutate(PA = ifelse(Abundance > 0, 1, 0)) %>%
+  select(-Abundance) %>%
+  arrange(subjectID, vaccination_proximity)
+
+# Create presence / absence table
+ds3.pa.xtab <- ds3.pa %>%
+  group_by(vaccination_proximity, family, seroconversion, PA) %>%
+  tally() %>%
+  pivot_wider(names_from = PA, values_from = n) %>%
+  mutate(Percent = 100*(`1`/(`0` + `1`))) %>%
+  ungroup() %>%
+  replace_na(list(`1` = 0, Percent = 0))
+ds3.pa.xtab
+
+# Prepare contingency table
+p.ds3.pa.xtab <- ggplot(ds3.pa.xtab, aes(x = family, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity) +
+  coord_flip() +
+  theme(panel.grid.minor = element_blank()) +
+  labs(fill = "Seroconversion", y = "% Positive", x = "")+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank())+
+  theme(legend.position="none")+
+  ylim(0,100)
+
+ds3.fish <- ds3.pa.xtab %>%
+  filter(vaccination_proximity == "DS3") %>%
+  group_by(family) %>%
+  summarize(pvalue = fisher.test(matrix(c(`0`, `1`), nrow = 2, ))$p) %>%
+  adjust_pvalue(p.col = "pvalue", output.col = "p.adj", method = "holm") %>%
+  arrange(p.adj)
+ds3.fish
+
+ggplot(ds3.fish, aes(x = p.adj, y = family)) +
+  geom_point(size = 3) +
+  geom_vline(xintercept = 0.05, lty = 2) +
+  labs(x = "Adjusted p-value", y = "Caudovirales Family")
+
+```
+
+```{r phage Figure 1 Relative abundance}
+Phase.Figure3A<-ggarrange(p.DS1.caudo, p.DS2.caudo, p.DS3.caudo, ncol = 3, legend = "bottom", common.legend = TRUE, widths = c(1.1,1,1))
+# ggsave("Rotabiome_phage_seroconversion_Figure3A.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+
+```
+
+
+```{r fisher-time-series}
+ds1.pa.xtab %>%
+  select(-`0`, -`1`, -`NA`)
+
+fish.bind <- bind_rows(ds1.pa.xtab, ds2.pa.xtab, ds3.pa.xtab)
+
+ggplot(fish.bind, aes(x = family, y = Percent, fill = seroconversion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~vaccination_proximity, ncol = 4) +
+  labs(x = "", y = "% Positive", fill = "Seroconversion") +
+  coord_flip()
+
+# ggsave("Rotabiome_phage_seroconversion_FigureS3B.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+
+```
+
+# Time series analysis
+
+```{r phage-time-series}
+# Create simplified merged abundance tables
+df.ds1 <- psm.DS1.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(participant_id, seroconversion, family, Abundance) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Dose = "DS1")
+
+df.ds2 <- psm.DS2.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(participant_id, seroconversion, family, Abundance) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Dose = "DS2")
+
+df.ds3 <- psm.DS3.caudo.m.unfilt %>%
+  as_tibble() %>%
+  select(participant_id, seroconversion, family, Abundance) %>%
+  replace(is.na(.), 0) %>%
+  mutate(Dose = "DS3")
+
+bound <- bind_rows(df.ds1, df.ds2, df.ds3)
+
+# Time series
+p.caudo.family.ts <- ggplot(bound, aes(x = Dose, y = Abundance, color = family, group = family)) +
+  geom_jitter(width = 0.1) +
+  geom_smooth() +
+  facet_wrap(~seroconversion, ncol = 2) +
+  labs(color = "Family", y = "Relative Abundance", x = "")
+
+# ggsave("Rotabiome_phage_seroconversion_FigureS3C.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+
+# do some statistics
+p.caudo.family.ts.aov <- aov(Abundance ~ Dose + seroconversion, data = bound)
+summary(p.caudo.family.ts.aov)
+
+psm.DS1.caudo.m.unfilt %>% group_by(family, "seroconversion") %>%
+    dunn_test(Abundance ~ seroconversion, p.adjust.method = "holm") %>%
+    add_significance()
+psm.DS2.caudo.m.unfilt %>% group_by(family, "seroconversion") %>%
+    dunn_test(Abundance ~ seroconversion, p.adjust.method = "holm") %>%
+    add_significance()
+psm.DS3.caudo.m.unfilt %>% group_by(family, "seroconversion") %>%
+    dunn_test(Abundance ~ seroconversion, p.adjust.method = "holm") %>%
+    add_significance()
+
+bound %>%
+  group_by(seroconversion, family) %>%
+  dunn_test(Abundance ~ Dose) %>%
+  arrange(p.adj)
+
+# Seroconversion
+p.caudo.family.sero <- ggplot(bound, aes(x = seroconversion, y = Abundance, color = seroconversion, group = seroconversion)) +
+  geom_jitter(width = 0.1) +
+  geom_smooth(method = "loess") +
+  facet_wrap(~family, ncol = 2) +
+  labs(color = "Seroconversion", y = "Relative Abundance")
+
+# ggsave("Rotabiome_phage_seroconversion_FigureS3A_diversity.tiff", units="in", width=4, height=4, dpi=300, compression = 'lzw')
+
+
+bound %>%
+  group_by(Dose, family) %>%
+  dunn_test(Abundance ~ seroconversion) %>%
+  arrange(p.adj) %>%
+  filter(Dose == "DS1")
+
+  
+```
+
+## Alpha diversity- Time series analysis
+
+```{r DS1-Alpha-Div}
+##Dose1
+# Calculate Alpha Diversity measures
+DS1.alpha.values <- psm.DS1.caudo %>%
+  estimate_richness(measures = c("Observed", "Shannon")) %>%
+  as_tibble()
+
+# Pull sample data for merging with alpha diversity measures
+sd.DS1 <- sample_data(psm.DS1.caudo)
+
+# Bind sample data with alpha diversity measures
+DS1.alpha_div <- cbind(sd.DS1, DS1.alpha.values)
+  # Note a lot of these will be NA values due to sample merging
+
+# Select variables of interest for simplicity
+DS1.alpha_div.select <- DS1.alpha_div %>%
+  as_tibble() %>%
+  select(vaccination_proximity, seroconversion, Observed, Shannon)
+
+##Dose2
+# Calculate Alpha Diversity measures
+DS2.alpha.values <- psm.DS2.caudo %>%
+  estimate_richness(measures = c("Observed", "Shannon")) %>%
+  as_tibble()
+
+# Pull sample data for merging with alpha diversity measures
+sd.DS2 <- sample_data(psm.DS2.caudo)
+
+# Bind sample data with alpha diversity measures
+DS2.alpha_div <- cbind(sd.DS2, DS2.alpha.values)
+  # Note a lot of these will be NA values due to sample merging
+
+# Select variables of interest for simplicity
+DS2.alpha_div.select <- DS2.alpha_div %>%
+  as_tibble() %>%
+  select(vaccination_proximity, seroconversion, Observed, Shannon)
+
+##Dose3
+# Calculate Alpha Diversity measures
+DS3.alpha.values <- psm.DS3.caudo %>%
+  estimate_richness(measures = c("Observed", "Shannon")) %>%
+  as_tibble()
+
+# Pull sample data for merging with alpha diversity measures
+sd.DS3 <- sample_data(psm.DS3.caudo)
+
+# Bind sample data with alpha diversity measures
+DS3.alpha_div <- cbind(sd.DS3, DS3.alpha.values)
+  # Note a lot of these will be NA values due to sample merging
+
+# Select variables of interest for simplicity
+DS3.alpha_div.select <- DS3.alpha_div %>%
+  as_tibble() %>%
+  select(vaccination_proximity, seroconversion, Observed, Shannon)
+
+# Bind all 3 vaccination proximity alpha diversity values into a single data frame
+alpha.all.df <- bind_rows(DS1.alpha_div.select, DS2.alpha_div.select, DS3.alpha_div.select)
+
+# Add a continuous time variable
+alpha.timeseries.df <- alpha.all.df %>%
+  as_tibble %>%
+  mutate(time_point = ifelse(vaccination_proximity == "DS1", 1,
+                             ifelse(vaccination_proximity == "DS2", 2, 3)))
+
+# Test for linear association between time and Observed
+fit.rich <- lm(Observed ~ time_point, data = alpha.timeseries.df)
+summary(fit.rich)
+
+# Plot
+alpha.time.richness <-ggplot(alpha.timeseries.df, aes(x=vaccination_proximity, y=Observed, group = seroconversion, color = seroconversion)) +
+  geom_jitter(width = 0.2) +
+  geom_smooth(method = "lm") +
+  labs(y = "Richness", x = "", color = "seroconversion")+
+  theme(plot.title = element_text(hjust=0.5), legend.position = "none")+
+  ylim(0,30)
+
+
+# ggsave("Rotabiome_phage_seroconversion_Figure3B_richness.tiff", units="in", width=4, height=4, dpi=300, compression = 'lzw')
+
+
+fit.2.rich <- aov(Observed ~ time_point + seroconversion, data = alpha.timeseries.df)
+summary(fit.2.rich)
+
+
+# Test for linear association between time and Shannon
+fit.sd <- lm(Shannon ~ time_point, data = alpha.timeseries.df)
+summary(fit.sd)
+
+# Plot
+alpha.time.shannon <-ggplot(alpha.timeseries.df, aes(x=vaccination_proximity, y=Shannon, group = seroconversion, color = seroconversion)) +
+  geom_jitter(width = 0.2) +
+  geom_smooth(method = "lm") +
+  labs(y = "Shannon diversity", x = "", color = "seroconversion")+
+  theme(plot.title = element_text(hjust=0.5), legend.position = "none")+
+  ylim(0,4)
+
+# ggsave("Rotabiome_phage_seroconversion_Figure3B_diversity.tiff", units="in", width=4, height=4, dpi=300, compression = 'lzw')
+
+fit.2.sd <- aov(Shannon ~ time_point + seroconversion, data = alpha.timeseries.df)
+summary(fit.2.sd)
+
+alpha.time<-ggarrange(alpha.time.richness, alpha.time.shannon,  nrow = 2, ncol =1, common.legend = TRUE, legend = "bottom", widths = c(1, 1,3))
+
+```
+
+
+```{r DS1-phage-bacteria-alpha}
+### Richness
+# Import in bacterial richness
+DS1.bact_alpha <- read_tsv(file = "./psm.DS1.rich.tsv", col_names = TRUE)
+
+# Reformat bacterial richness
+DS1.bact_observed <- DS1.bact_alpha %>%
+  select(subjectID, seroconversion, vaccination_proximity, Observed, Shannon) %>%
+  rename(`Bacterial Richness` = Observed) %>%
+  rename(`Bacterial Shannon` = Shannon)
+
+# Reformat phage alpha diversity
+DS1.alpha.phage <- DS1.alpha_div %>%
+  as_tibble() %>%
+  select(subjectID, Observed, Shannon) %>%
+  rename(`Phage Richness` = Observed) %>%
+  rename(`Phage Shannon` = Shannon)
+  
+# Join bacterial and phage richness
+DS1.bp.obs <- inner_join(DS1.bact_observed, DS1.alpha.phage, by = "subjectID")
+
+# Richness correlation
+p.BP.rich.DS1 <- ggplot(DS1.bp.obs, aes(x = `Bacterial Richness`, y = `Phage Richness`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(y = "Phage Richness (log10)", x = "Bacterial Richness (log10)", color = "Seroconversion")
+
+
+# All Samples
+cor.test(DS1.bp.obs$`Phage Richness`, DS1.bp.obs$`Bacterial Richness`, method = "spearman")
+
+# Seroconversion correlations
+sero.DS1 <- DS1.bp.obs %>%
+  filter(seroconversion == "Yes")
+
+cor.test(sero.DS1$`Bacterial Richness`, sero.DS1$`Phage Richness`, method = "spearman")
+
+# Non-sero correlations
+nonsero.DS1 <- DS1.bp.obs %>%
+  filter(seroconversion == "No")
+
+cor.test(nonsero.DS1$`Bacterial Richness`, nonsero.DS1$`Phage Richness`, method = "spearman")
+
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS1.bp.obs)
+summary(fit.BP.rich)
+
+# Shannon diversity correlation
+p.BP.sd.DS1 <- ggplot(DS1.bp.obs, aes(x = `Bacterial Shannon`, y = `Phage Shannon`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Bacterial Shannon Diversity", y = "Phage Shannon Diversity") +
+  labs(color = "Seroconversion")
+
+
+cor.test(DS1.bp.obs$`Bacterial Shannon`, DS1.bp.obs$`Phage Shannon`, method = "spearman")
+
+# Seroconversion correlations
+cor.test(sero.DS1$`Bacterial Shannon`, sero.DS1$`Phage Shannon`, method = "spearman")
+
+# Non-sero correlations
+# Seroconversion correlations
+cor.test(nonsero.DS1$`Bacterial Shannon`, nonsero.DS1$`Phage Shannon`, method = "spearman")
+
+# Linear model Richness
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS1.bp.obs)
+summary(fit.BP.rich)
+
+# Linear model Shannon
+fit.BP.sd <- aov(`Phage Shannon` ~ `Bacterial Shannon` + seroconversion, data = DS1.bp.obs)
+summary(fit.BP.sd)
+
+```
+
+
+```{r DS2-phage-bacteria-alpha}
+### Richness
+# Import in bacterial richness
+DS2.bact_alpha <- read_tsv(file = "./psm.DS2.rich.tsv", col_names = TRUE)
+
+# Reformat bacterial richness
+DS2.bact_observed <- DS2.bact_alpha %>%
+  select(subjectID, seroconversion, vaccination_proximity, Observed, Shannon) %>%
+  rename(`Bacterial Richness` = Observed) %>%
+  rename(`Bacterial Shannon` = Shannon)
+
+# Reformat phage alpha diversity
+DS2.alpha.phage <- DS2.alpha_div %>%
+  as_tibble() %>%
+  select(subjectID, Observed, Shannon) %>%
+  rename(`Phage Richness` = Observed) %>%
+  rename(`Phage Shannon` = Shannon)
+  
+# Join bacterial and phage richness
+DS2.bp.obs <- inner_join(DS2.bact_observed, DS2.alpha.phage, by = "subjectID")
+
+# Richness correlation
+p.BP.rich.DS2 <- ggplot(DS2.bp.obs, aes(x = `Bacterial Richness`, y = `Phage Richness`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(y = "Phage Richness (log10)", x = "Bacterial Richness (log10)", color = "Seroconversion")
+
+
+# All Samples
+cor.test(DS2.bp.obs$`Phage Richness`, DS2.bp.obs$`Bacterial Richness`, method = "spearman")
+
+# Seroconversion correlations
+sero.DS2 <- DS2.bp.obs %>%
+  filter(seroconversion == "Yes")
+
+cor.test(sero.DS2$`Bacterial Richness`, sero.DS2$`Phage Richness`, method = "spearman")
+
+# Non-sero correlations
+nonsero.DS2 <- DS2.bp.obs %>%
+  filter(seroconversion == "No")
+
+cor.test(nonsero.DS2$`Bacterial Richness`, nonsero.DS2$`Phage Richness`, method = "spearman")
+
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS2.bp.obs)
+summary(fit.BP.rich)
+
+# Shannon diversity correlation
+p.BP.sd.DS2 <- ggplot(DS2.bp.obs, aes(x = `Bacterial Shannon`, y = `Phage Shannon`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Bacterial Shannon Diversity", y = "Phage Shannon Diversity") +
+  labs(color = "Seroconversion")
+
+
+cor.test(DS2.bp.obs$`Bacterial Shannon`, DS2.bp.obs$`Phage Shannon`, method = "spearman")
+
+# Seroconversion correlations
+cor.test(sero.DS2$`Bacterial Shannon`, sero.DS2$`Phage Shannon`, method = "spearman")
+
+# Non-sero correlations
+# Seroconversion correlations
+cor.test(nonsero.DS2$`Bacterial Shannon`, nonsero.DS2$`Phage Shannon`, method = "spearman")
+
+# Linear model Richness
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS2.bp.obs)
+summary(fit.BP.rich)
+
+# Linear model Shannon
+fit.BP.sd <- aov(`Phage Shannon` ~ `Bacterial Shannon` + seroconversion, data = DS2.bp.obs)
+summary(fit.BP.sd)
+
+```
+
+```{r DS3-phage-bacteria-alpha}
+### Richness
+# Import in bacterial richness
+DS3.bact_alpha <- read_tsv(file = "./psm.DS3.rich.tsv", col_names = TRUE)
+
+# Reformat bacterial richness
+DS3.bact_observed <- DS3.bact_alpha %>%
+  select(subjectID, seroconversion, vaccination_proximity, Observed, Shannon) %>%
+  rename(`Bacterial Richness` = Observed) %>%
+  rename(`Bacterial Shannon` = Shannon)
+
+# Reformat phage alpha diversity
+DS3.alpha.phage <- DS3.alpha_div %>%
+  as_tibble() %>%
+  select(subjectID, Observed, Shannon) %>%
+  rename(`Phage Richness` = Observed) %>%
+  rename(`Phage Shannon` = Shannon)
+  
+# Join bacterial and phage richness
+DS3.bp.obs <- inner_join(DS3.bact_observed, DS3.alpha.phage, by = "subjectID")
+
+# Richness correlation
+p.BP.rich.DS3 <- ggplot(DS3.bp.obs, aes(x = `Bacterial Richness`, y = `Phage Richness`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  scale_x_log10() +
+  scale_y_log10() +
+  labs(y = "Phage Richness (log10)", x = "Bacterial Richness (log10)", color = "Seroconversion")
+
+
+
+# All Samples
+cor.test(DS3.bp.obs$`Phage Richness`, DS3.bp.obs$`Bacterial Richness`, method = "spearman")
+
+# Seroconversion correlations
+sero.DS3 <- DS3.bp.obs %>%
+  filter(seroconversion == "Yes")
+
+cor.test(sero.DS3$`Bacterial Richness`, sero.DS3$`Phage Richness`, method = "spearman")
+
+# Non-sero correlations
+nonsero.DS3 <- DS3.bp.obs %>%
+  filter(seroconversion == "No")
+
+cor.test(nonsero.DS3$`Bacterial Richness`, nonsero.DS3$`Phage Richness`, method = "spearman")
+
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS3.bp.obs)
+summary(fit.BP.rich)
+
+# Shannon diversity correlation
+p.BP.sd.DS3 <- ggplot(DS3.bp.obs, aes(x = `Bacterial Shannon`, y = `Phage Shannon`, group = seroconversion, color = seroconversion)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(x = "Bacterial Shannon Diversity", y = "Phage Shannon Diversity") +
+  labs(color = "Seroconversion")
+
+
+cor.test(DS3.bp.obs$`Bacterial Shannon`, DS3.bp.obs$`Phage Shannon`, method = "spearman")
+
+# Seroconversion correlations
+cor.test(sero.DS3$`Bacterial Shannon`, sero.DS3$`Phage Shannon`, method = "spearman")
+
+# Non-sero correlations
+cor.test(nonsero.DS3$`Bacterial Shannon`, nonsero.DS3$`Phage Shannon`, method = "spearman")
+
+# Linear model Richness
+fit.BP.rich <- aov(`Phage Richness` ~ `Bacterial Richness` + seroconversion, data = DS3.bp.obs)
+summary(fit.BP.rich)
+
+# Linear model Shannon
+fit.BP.sd <- aov(`Phage Shannon` ~ `Bacterial Shannon` + seroconversion, data = DS3.bp.obs)
+summary(fit.BP.sd)
+
+```
+
+
+```{r corr-arrange}
+ggarrange(p.BP.rich.DS1, p.BP.sd.DS1, p.BP.rich.DS2, p.BP.sd.DS2, p.BP.rich.DS3, p.BP.sd.DS3, ncol = 2, nrow = 3, common.legend = TRUE, legend = "bottom")
+
+# ggsave("Rotabiome_phage_seroconversion_Figure4.tiff", units="in", width=8, height=6, dpi=300, compression = 'lzw')
+
+
+```
+
+## Ordination
+
+```{r orination}
+## Dose 1
+pruned.DS1 <- prune_samples(sample_sums(psm.DS1.phage) > 0, psm.DS1.phage)
+DS1.ord <- phyloseq::ordinate(pruned.DS1, "NMDS", distance = "bray")
+
+p.ord.DS1 <- phyloseq::plot_ordination(psm.DS1.phage, DS1.ord, type="samples", color="seroconversion") + 
+    geom_point(size=2, alpha = 0.7) +
+  stat_ellipse(aes(group = seroconversion), linetype = 2)+
+  # geom_point(colour = "grey50", size = 0.1) +
+ labs(color = "seroconversion")+
+  theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "none", axis.text = element_text(angle = 0, family= "Arial", size = 10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+      geom_hline(yintercept = 0, alpha = 0.5, linetype = 2) +
+   geom_vline(xintercept = 0, alpha = 0.5, linetype = 2)
+
+## Dose 2
+pruned.DS2 <- prune_samples(sample_sums(psm.DS2.phage) > 0, psm.DS2.phage)
+DS2.ord <- phyloseq::ordinate(pruned.DS2, "NMDS", distance = "bray")
+
+p.ord.DS2 <- phyloseq::plot_ordination(psm.DS2.phage, DS2.ord, type="samples", color="seroconversion") + 
+  geom_point(size=2, alpha = 0.7) +
+  stat_ellipse(aes(group = seroconversion), linetype = 2)+
+  # geom_point(colour = "grey50", size = 0.1) +
+ labs(color = "seroconversion")+
+  theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "none", axis.text = element_text(angle = 0, family= "Arial", size = 10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+      geom_hline(yintercept = 0, alpha = 0.5, linetype = 2) +
+   geom_vline(xintercept = 0, alpha = 0.5, linetype = 2)
+
+## Dose 3
+pruned.DS3 <- prune_samples(sample_sums(psm.DS3.phage) > 0, psm.DS3.phage)
+DS3.ord <- phyloseq::ordinate(pruned.DS3, "NMDS", distance = "bray")
+
+p.ord.DS3 <- phyloseq::plot_ordination(psm.DS3.phage, DS3.ord, type="samples", color="seroconversion") + 
+  geom_point(size=2, alpha = 0.7) +
+  stat_ellipse(aes(group = seroconversion), linetype = 2)+
+  # geom_point(colour = "grey50", size = 0.1) +
+ labs(color = "seroconversion")+
+  theme(plot.title = element_text(hjust=0.5, angle = 0, family= "Arial", size = 10), legend.position= "none", axis.text = element_text(angle = 0, family= "Arial", size = 10))+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))+
+      geom_hline(yintercept = 0, alpha = 0.5, linetype = 2) +
+   geom_vline(xintercept = 0, alpha = 0.5, linetype = 2)
+
+ggarrange(p.ord.DS1, p.ord.DS2, p.ord.DS3, ncol = 3, common.legend = TRUE)
+# ggsave("Rotabiome_phage_seroconversion_Figure3C.tiff", units="in", width=9, height=3, dpi=300, compression = 'lzw')
+
+
+```
+
+```{r adonis}
+## Dose 1
+# Remove zero'd taxa
+pruned.ds1 <- prune_taxa(taxa_sums(psm.DS1.phage) > 0, psm.DS1.phage)
+pruned.ds1 <- prune_samples(sample_sums(pruned.ds1) > 0, psm.DS1.phage)
+
+sd.ds1 <- data.frame(sample_data(pruned.ds1))
+
+# Adonis test
+ds1.bray <- phyloseq::distance(pruned.ds1, method = "bray")
+vegan::adonis2(ds1.bray ~ seroconversion, data = sd.ds1)
+
+## Dose 2
+# Remove zero'd taxa
+pruned.ds2 <- prune_taxa(taxa_sums(psm.DS2.phage) > 0, psm.DS2.phage)
+pruned.ds2 <- prune_samples(sample_sums(pruned.ds2) > 0, psm.DS2.phage)
+
+sd.ds2 <- data.frame(sample_data(pruned.ds2))
+
+# Adonis test
+ds2.bray <- phyloseq::distance(pruned.ds2, method = "bray")
+vegan::adonis2(ds2.bray ~ seroconversion, data = sd.ds2)
+
+## Dose 3
+# Remove zero'd taxa
+pruned.ds3 <- prune_taxa(taxa_sums(psm.DS3.phage) > 0, psm.DS3.phage)
+pruned.ds3 <- prune_samples(sample_sums(pruned.ds3) > 0, psm.DS3.phage)
+
+sd.ds3 <- data.frame(sample_data(pruned.ds3))
+
+# Adonis test
+ds3.bray <- phyloseq::distance(pruned.ds3, method = "bray")
+vegan::adonis2(ds3.bray ~ seroconversion, data = sd.ds3)
+
+```
+
+```{r variable_correlation DS1}
+psm.DS1.phage <- subset_taxa(psm.DS1, superkingdom == "Phage")
+
+multi.corr.phage.DS1 <- psm.DS1.phage %>%
+transform_sample_counts(function(x) {x/sum(x)}) 
+
+multiple_correlation <- variable_correlation(multi.corr.phage.DS1, variables = "postvaccination_IgA_titer", classification = "family", method = "pearson")
+
+write.table(multiple_correlation, file = "./DS1_multiple_correlation_phage_family.txt", sep = "\t")
+
+# Genus vs. postvaccination markers
+DS1.Genus_all <- multi.corr.DS1 %>%
+tax_glom(taxrank = "Genus") %>%
+psmelt()
+
+```
+
+```{r variable_correlation DS2}
+psm.DS2.phage <- subset_taxa(psm.DS2, superkingdom == "Phage")
+
+multi.corr.phage.DS2 <- psm.DS2.phage %>%
+transform_sample_counts(function(x) {x/sum(x)})
+
+multiple_correlation_DS2 <- variable_correlation(multi.corr.phage.DS2, variables = "postvaccination_IgA_titer", classification = "species", method = "pearson")
+
+# Genus vs. postvaccination markers
+DS2.Genus_all <- multi.corr.DS2 %>%
+tax_glom(taxrank = "Genus") %>%
+psmelt()
+
+p.adjust(0.023, method = "bonferroni", n = 140)
+
+```
+
+```{r variable_correlation DS3}
+psm.DS3.phage <- subset_taxa(psm.DS3, superkingdom == "Phage")
+
+multi.corr.phage.DS3 <- psm.DS3.phage %>%
+transform_sample_counts(function(x) {x/sum(x)})
+
+multiple_correlation_DS3 <- variable_correlation(multi.corr.phage.DS3, variables = "postvaccination_IgA_titer", classification = "genus", method = "pearson")
+
+write.table(multiple_correlation_DS3, file = "./DS3_multiple_correlation_phage_family.txt", sep = "\t")
+
+# Genus vs. postvaccination markers
+DS3.genus_all <- multi.corr.phage.DS3 %>%
+# tax_glom(taxrank = "genus") %>%
+psmelt()
+
+DS3.genus_all.filt <- subset(DS3.genus_all, Abundance != "NA")
+
+Tequintavirus <- DS3.genus_all.filt %>% filter(genus == "Tequintavirus")
+
+Tequintavirus.plot <-ggplot(Tequintavirus, aes(x=Abundance, y=postvaccination_IgA_titer)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(y = "postvaccination_IgA_titer", x = "Tequintavirus abundance")+
+  theme(plot.title = element_text(hjust=0.5), legend.position = "right")+
+  stat_cor(method="pearson")
+
+p.adjust(0.011, method = "bonferroni", n = 51)
+
+```
